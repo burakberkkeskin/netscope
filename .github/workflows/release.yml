@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release version tag (e.g. v0.3.0)'
+        required: true
+        default: 'v0.3.0'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Package (${{ matrix.artifact }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: macos-arm64
+          - os: ubuntu-latest
+            artifact: linux-x86_64
+          - os: windows-latest
+            artifact: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: meta
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "ver=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Linux GUI & build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake pkg-config libxkbcommon-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libwayland-dev \
+            libgl1-mesa-dev libdbus-1-dev
+
+      - name: Install NASM (Windows aws-lc-sys)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build & Package macOS (.app.zip + .dmg)
+        if: runner.os == 'macOS'
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          VER="${{ steps.meta.outputs.ver }}"
+          chmod +x ./scripts/bundle-macos.sh
+          ./scripts/bundle-macos.sh "$VER"
+          mkdir -p artifacts
+          ditto -c -k --sequesterRsrc --keepParent dist/NetScope.app "artifacts/NetScope-${TAG}-macos-arm64.zip"
+          hdiutil create -volname "NetScope" -srcfolder dist/NetScope.app -ov -format UDZO "artifacts/NetScope-${TAG}-macos-arm64.dmg"
+
+      - name: Build & Package Linux (.tar.gz)
+        if: runner.os == 'Linux'
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          cargo build --release -p netscope-app
+          mkdir -p stage "artifacts"
+          cp target/release/netscope README.md LICENSE stage/
+          tar -czf "artifacts/NetScope-${TAG}-linux-x86_64.tar.gz" -C stage .
+
+      - name: Build & Package Windows (.zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.meta.outputs.tag }}"
+          cargo build --release -p netscope-app
+          New-Item -ItemType Directory -Force -Path stage, artifacts | Out-Null
+          Copy-Item target/release/netscope.exe, README.md, LICENSE stage/
+          Compress-Archive -Path stage/* -DestinationPath "artifacts/NetScope-$tag-windows-x86_64.zip"
+
+      - name: Upload packaged artifact(s)
+        uses: actions/upload-artifact@v4
+        with:
+          name: netscope-${{ matrix.artifact }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  publish:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        working-directory: release-assets
+        run: |
+          sha256sum NetScope-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: NetScope ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: release-assets/*

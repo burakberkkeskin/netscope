@@ -1,0 +1,28 @@
+[package]
+name = "netscope-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+socket2.workspace = true
+netdev.workspace = true
+hickory-resolver.workspace = true
+hickory-proto.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-platform-verifier.workspace = true
+rustls-pki-types.workspace = true
+rustls-webpki.workspace = true
+x509-parser.workspace = true
+sha2.workspace = true
+hex.workspace = true

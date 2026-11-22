@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/netscope-core",
+    "crates/netscope-app",
+]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+authors = ["Burak Berk Keskin"]
+license = "MIT"
+rust-version = "1.88"
+repository = "https://github.com/burakberkkeskin/netscope"
+homepage = "https://github.com/burakberkkeskin/netscope"
+description = "Cross-platform, pure-Rust native network diagnostics desktop app and system tray monitor"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+socket2 = "0.6"
+netdev = "0.47"
+hickory-resolver = "0.26"
+hickory-proto = "0.26"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "charset"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "logging", "tls12"] }
+rustls-platform-verifier = "0.7"
+rustls-pki-types = "1"
+rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "std"] }
+x509-parser = "0.18"
+sha2 = "0.10"
+hex = "0.4"
+eframe = "0.37"
+egui = "0.37"
+egui_extras = "0.37"
+egui_plot = "0.38"
+earcutr = "0.5"
+png = "0.18"
+tray-icon = { version = "0.26", default-features = false }

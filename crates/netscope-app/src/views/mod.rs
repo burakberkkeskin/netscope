@@ -1,0 +1,13 @@
+pub mod dns;
+pub mod internet_check;
+pub mod iperf3;
+pub mod lan_scanner;
+pub mod mtr;
+pub mod path_troubleshoot;
+pub mod ping;
+pub mod port_scan;
+pub mod speedtest;
+pub mod subnet_calc;
+pub mod tls;
+pub mod traceroute;
+pub mod visual_traceroute;
