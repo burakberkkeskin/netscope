@@ -29,13 +29,17 @@ impl GeoLocation {
         if self.is_private {
             return self.label.clone();
         }
-        let base = match (&self.city, &self.country_code) {
-            (Some(c), Some(cc)) if !c.is_empty() => format!("{c}, {cc}"),
-            (None, Some(cc)) => cc.clone(),
-            _ => self
-                .country
-                .clone()
-                .unwrap_or_else(|| self.label.clone()),
+        let base = match (
+            self.city.as_deref().filter(|s| !s.trim().is_empty()),
+            self.country_code.as_deref().filter(|s| !s.trim().is_empty()),
+            self.country.as_deref().filter(|s| !s.trim().is_empty()),
+        ) {
+            (Some(c), Some(cc), _) => format!("{c}, {cc}"),
+            (Some(c), None, Some(co)) => format!("{c}, {co}"),
+            (Some(c), None, None) => c.to_string(),
+            (None, Some(cc), _) => cc.to_string(),
+            (None, None, Some(co)) => co.to_string(),
+            (None, None, None) => self.label.clone(),
         };
         match &self.anycast_pop {
             Some(pop) if pop == "RTT-Edge" => format!("{base} [Anycast Edge]"),
@@ -227,6 +231,158 @@ struct IpWhoIsConn {
     org: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct IpGuideResp {
+    network: Option<IpGuideNetwork>,
+    location: Option<IpGuideLocation>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IpGuideNetwork {
+    autonomous_system: Option<IpGuideAs>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IpGuideAs {
+    asn: Option<u64>,
+    name: Option<String>,
+    organization: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IpGuideLocation {
+    city: Option<String>,
+    country: Option<String>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RipeGeoResp {
+    status: Option<String>,
+    data: Option<RipeGeoData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RipeGeoData {
+    located_resources: Option<Vec<RipeLocatedResource>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RipeLocatedResource {
+    locations: Option<Vec<RipeLocationEntry>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RipeLocationEntry {
+    country: Option<String>,
+    city: Option<String>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+}
+
+fn non_empty(s: Option<String>) -> Option<String> {
+    s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+fn valid_coords(lat: Option<f64>, lon: Option<f64>) -> (Option<f64>, Option<f64>) {
+    match (lat, lon) {
+        (Some(la), Some(lo))
+            if la.is_finite() && lo.is_finite() && !(la.abs() < 1e-6 && lo.abs() < 1e-6) =>
+        {
+            (Some(la), Some(lo))
+        }
+        _ => (None, None),
+    }
+}
+
+fn default_public_geo(ip: IpAddr) -> GeoLocation {
+    GeoLocation {
+        ip,
+        is_private: false,
+        is_anycast: false,
+        anycast_pop: None,
+        registry_place: None,
+        label: "Public IP".into(),
+        city: None,
+        country: None,
+        country_code: None,
+        isp: None,
+        asn: None,
+        lat: None,
+        lon: None,
+    }
+}
+
+fn parse_ip_guide(ip: IpAddr, data: IpGuideResp) -> GeoLocation {
+    let (asn, isp) = match data.network.and_then(|n| n.autonomous_system) {
+        Some(a) => (a.asn, non_empty(a.organization).or_else(|| non_empty(a.name))),
+        None => (None, None),
+    };
+    let is_anycast = is_known_anycast_asn(asn, isp.as_deref());
+    let (city, country, lat, lon) = match data.location {
+        Some(l) => {
+            let (lat, lon) = valid_coords(l.latitude, l.longitude);
+            (non_empty(l.city), non_empty(l.country), lat, lon)
+        }
+        None => (None, None, None, None),
+    };
+
+    GeoLocation {
+        ip,
+        is_private: false,
+        is_anycast,
+        anycast_pop: None,
+        registry_place: None,
+        label: "Public IP".into(),
+        city,
+        country,
+        // Intentionally do not copy autonomous_system.country into country_code:
+        // multinational transit ASes route traffic across many countries.
+        country_code: None,
+        isp,
+        asn,
+        lat,
+        lon,
+    }
+}
+
+fn apply_ripe_geo(loc: &mut GeoLocation, resp: RipeGeoResp) -> bool {
+    if resp.status.as_deref().is_some_and(|s| s != "ok") {
+        return false;
+    }
+    let Some(entry) = resp
+        .data
+        .and_then(|d| d.located_resources)
+        .and_then(|mut rs| rs.drain(..).next())
+        .and_then(|r| r.locations)
+        .and_then(|mut ls| ls.drain(..).next())
+    else {
+        return false;
+    };
+
+    if entry.country.as_deref().map(str::trim) == Some("?") {
+        return false;
+    }
+    let (Some(lat), Some(lon)) = valid_coords(entry.latitude, entry.longitude) else {
+        return false;
+    };
+
+    loc.lat = Some(lat);
+    loc.lon = Some(lon);
+    if loc.city.as_deref().is_none_or(|s| s.trim().is_empty()) {
+        loc.city = non_empty(entry.city);
+    }
+    if loc
+        .country_code
+        .as_deref()
+        .is_none_or(|s| s.trim().is_empty())
+    {
+        loc.country_code = non_empty(entry.country);
+    }
+    true
+}
+
 static GEO_CACHE: OnceLock<Arc<Mutex<HashMap<IpAddr, GeoLocation>>>> = OnceLock::new();
 
 fn cache() -> &'static Arc<Mutex<HashMap<IpAddr, GeoLocation>>> {
@@ -348,7 +504,35 @@ pub async fn probe_anycast_http_pop(client: &reqwest::Client, ip: IpAddr) -> Opt
     None
 }
 
-/// Resolves geographic coordinates & ISP/ASN metadata for an IP with Anycast Edge PoP detection, caching, and strict OPSEC.
+fn apply_anycast_pop(loc: &mut GeoLocation, pop: &'static IataPop) {
+    let reg = match (
+        loc.city.as_deref().filter(|s| !s.trim().is_empty()),
+        loc.country_code.as_deref().filter(|s| !s.trim().is_empty()),
+        loc.country.as_deref().filter(|s| !s.trim().is_empty()),
+    ) {
+        (Some(c), Some(cc), _) => Some(format!("{c}, {cc}")),
+        (Some(c), None, Some(co)) => Some(format!("{c}, {co}")),
+        (None, Some(cc), _) => Some(cc.to_string()),
+        (None, None, Some(co)) => Some(co.to_string()),
+        _ => None,
+    };
+    loc.registry_place = reg;
+    loc.is_anycast = true;
+    loc.anycast_pop = Some(pop.code.to_string());
+    loc.city = Some(pop.city.to_string());
+    loc.country = Some(pop.country.to_string());
+    loc.country_code = Some(pop.country_code.to_string());
+    loc.lat = Some(pop.lat);
+    loc.lon = Some(pop.lon);
+}
+
+fn should_probe_anycast_early(loc: &GeoLocation) -> bool {
+    loc.is_anycast
+        || loc.country_code.as_deref() == Some("US")
+        || loc.country.as_deref() == Some("United States")
+}
+
+/// Resolves geographic coordinates & ISP/ASN metadata for an IP with multi-provider fallbacks, Anycast Edge PoP detection, and strict OPSEC.
 pub async fn lookup_ip(ip: IpAddr) -> GeoLocation {
     if let Some(local) = classify_local_ip(ip) {
         return local;
@@ -359,40 +543,27 @@ pub async fn lookup_ip(ip: IpAddr) -> GeoLocation {
     }
 
     crate::ensure_crypto_provider();
-    let fallback = GeoLocation {
-        ip,
-        is_private: false,
-        is_anycast: false,
-        anycast_pop: None,
-        registry_place: None,
-        label: "Public IP".into(),
-        city: None,
-        country: None,
-        country_code: None,
-        isp: None,
-        asn: None,
-        lat: None,
-        lon: None,
-    };
+    let fallback = default_public_geo(ip);
 
     let Ok(client) = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(4))
-        .user_agent("NetScope/0.1")
+        .user_agent("NetScope/0.3")
         .build()
     else {
         return fallback;
     };
 
-    let url = format!("https://ipwho.is/{ip}");
-    let mut loc = match client.get(url).send().await {
+    // Provider 1: ipwho.is (may be DNS-sinkholed to 0.0.0.0 by AdGuard / Pi-hole)
+    let mut loc = match client.get(format!("https://ipwho.is/{ip}")).send().await {
         Ok(resp) if resp.status().is_success() => match resp.json::<IpWhoIsResp>().await {
             Ok(data) if data.success.unwrap_or(false) => {
                 let (asn, isp) = match data.connection {
-                    Some(c) => (c.asn, c.isp.or(c.org)),
+                    Some(c) => (c.asn, non_empty(c.isp).or_else(|| non_empty(c.org))),
                     None => (None, None),
                 };
                 let anycast = is_known_anycast_asn(asn, isp.as_deref());
+                let (lat, lon) = valid_coords(data.latitude, data.longitude);
                 GeoLocation {
                     ip,
                     is_private: false,
@@ -400,37 +571,59 @@ pub async fn lookup_ip(ip: IpAddr) -> GeoLocation {
                     anycast_pop: None,
                     registry_place: None,
                     label: "Public IP".into(),
-                    city: data.city,
-                    country: data.country,
-                    country_code: data.country_code,
+                    city: non_empty(data.city),
+                    country: non_empty(data.country),
+                    country_code: non_empty(data.country_code),
                     isp,
                     asn,
-                    lat: data.latitude,
-                    lon: data.longitude,
+                    lat,
+                    lon,
                 }
             }
-            _ => fallback,
+            _ => default_public_geo(ip),
         },
-        _ => fallback,
+        _ => default_public_geo(ip),
     };
 
-    // If this IP belongs to a known Anycast network (or its registry country is US), probe HTTP headers for real Edge PoP IATA
-    if (loc.is_anycast || loc.country_code.as_deref() == Some("US"))
+    // Provider 2: ip.guide (privacy-friendly, not on standard adblock lists)
+    if loc.lat.is_none()
+        && loc.asn.is_none()
+        && let Ok(resp) = client.get(format!("https://ip.guide/{ip}")).send().await
+        && resp.status().is_success()
+        && let Ok(data) = resp.json::<IpGuideResp>().await
+    {
+        loc = parse_ip_guide(ip, data);
+    }
+
+    // Early Anycast Edge PoP probe before Provider 3 so Cloudflare/Fastly/CloudFront IPs resolve directly in ~20ms
+    let mut probed_http = false;
+    if should_probe_anycast_early(&loc) {
+        probed_http = true;
+        if let Some(pop) = probe_anycast_http_pop(&client, ip).await {
+            apply_anycast_pop(&mut loc, pop);
+        }
+    }
+
+    // Provider 3: RIPEstat MaxMind GeoLite2 (official RIR endpoint, fills unlocated non-Anycast hops while preserving ip.guide ASN/ISP)
+    if loc.lat.is_none()
+        && let Ok(resp) = client
+            .get(format!(
+                "https://stat.ripe.net/data/maxmind-geo-lite/data.json?resource={ip}"
+            ))
+            .send()
+            .await
+        && resp.status().is_success()
+        && let Ok(data) = resp.json::<RipeGeoResp>().await
+    {
+        apply_ripe_geo(&mut loc, data);
+    }
+
+    // Fallback Anycast HTTP probe if RIPEstat returned US or location is still unmapped
+    if !probed_http
+        && (should_probe_anycast_early(&loc) || loc.lat.is_none())
         && let Some(pop) = probe_anycast_http_pop(&client, ip).await
     {
-        let reg = match (&loc.city, &loc.country_code) {
-            (Some(c), Some(cc)) if !c.is_empty() => Some(format!("{c}, {cc}")),
-            (None, Some(cc)) => Some(cc.clone()),
-            _ => None,
-        };
-        loc.registry_place = reg;
-        loc.is_anycast = true;
-        loc.anycast_pop = Some(pop.code.to_string());
-        loc.city = Some(pop.city.to_string());
-        loc.country = Some(pop.country.to_string());
-        loc.country_code = Some(pop.country_code.to_string());
-        loc.lat = Some(pop.lat);
-        loc.lon = Some(pop.lon);
+        apply_anycast_pop(&mut loc, pop);
     }
 
     if loc.lat.is_some() {
@@ -504,6 +697,124 @@ mod tests {
             fake_sf.registry_place.as_deref(),
             Some("San Francisco, US")
         );
+    }
+
+    #[test]
+    fn parses_ip_guide_response_and_formats_short_place() {
+        let regular_json = r#"{
+            "ip": "212.156.120.159",
+            "network": {
+                "autonomous_system": {
+                    "asn": 9121,
+                    "name": "TTNet",
+                    "organization": "Turk Telekom",
+                    "country": "TR"
+                }
+            },
+            "location": {
+                "city": "Istanbul",
+                "country": "Türkiye",
+                "latitude": 41.0108,
+                "longitude": 28.9482
+            }
+        }"#;
+        let parsed: IpGuideResp = serde_json::from_str(regular_json).unwrap();
+        let loc = parse_ip_guide("212.156.120.159".parse().unwrap(), parsed);
+        assert_eq!(loc.asn, Some(9121));
+        assert_eq!(loc.isp.as_deref(), Some("Turk Telekom"));
+        assert!(!loc.is_anycast);
+        assert_eq!(loc.city.as_deref(), Some("Istanbul"));
+        assert_eq!(loc.country.as_deref(), Some("Türkiye"));
+        assert_eq!(loc.country_code, None);
+        assert_eq!(loc.lat, Some(41.0108));
+        assert_eq!(loc.lon, Some(28.9482));
+        assert_eq!(loc.short_place(), "Istanbul, Türkiye");
+
+        let anycast_json = r#"{
+            "ip": "1.1.1.1",
+            "network": {
+                "autonomous_system": {
+                    "asn": 13335,
+                    "name": "CLOUDFLARENET",
+                    "organization": "Cloudflare, Inc.",
+                    "country": "US"
+                }
+            },
+            "location": {
+                "city": null,
+                "country": null,
+                "latitude": null,
+                "longitude": null
+            }
+        }"#;
+        let parsed_cf: IpGuideResp = serde_json::from_str(anycast_json).unwrap();
+        let loc_cf = parse_ip_guide("1.1.1.1".parse().unwrap(), parsed_cf);
+        assert_eq!(loc_cf.asn, Some(13335));
+        assert_eq!(loc_cf.isp.as_deref(), Some("Cloudflare, Inc."));
+        assert!(loc_cf.is_anycast);
+        assert_eq!(loc_cf.lat, None);
+        assert_eq!(loc_cf.lon, None);
+    }
+
+    #[test]
+    fn ripe_geo_rejects_null_island_and_parses_valid_location() {
+        let mut loc = GeoLocation {
+            ip: "198.51.100.10".parse().unwrap(),
+            is_private: false,
+            is_anycast: false,
+            anycast_pop: None,
+            registry_place: None,
+            label: "Public IP".into(),
+            city: None,
+            country: None,
+            country_code: None,
+            isp: Some("Arelion".into()),
+            asn: Some(1299),
+            lat: None,
+            lon: None,
+        };
+
+        let null_island_json = r#"{
+            "status": "ok",
+            "data": {
+                "located_resources": [{
+                    "locations": [{
+                        "country": "?",
+                        "city": "",
+                        "latitude": 0.0,
+                        "longitude": 0.0
+                    }]
+                }]
+            }
+        }"#;
+        let bad_resp: RipeGeoResp = serde_json::from_str(null_island_json).unwrap();
+        assert!(!apply_ripe_geo(&mut loc, bad_resp));
+        assert_eq!(loc.lat, None);
+        assert_eq!(loc.country_code, None);
+
+        let valid_json = r#"{
+            "status": "ok",
+            "data": {
+                "located_resources": [{
+                    "locations": [{
+                        "country": "FR",
+                        "city": "",
+                        "latitude": 48.8582,
+                        "longitude": 2.3387
+                    }]
+                }]
+            }
+        }"#;
+        let good_resp: RipeGeoResp = serde_json::from_str(valid_json).unwrap();
+        assert!(apply_ripe_geo(&mut loc, good_resp));
+        assert_eq!(loc.lat, Some(48.8582));
+        assert_eq!(loc.lon, Some(2.3387));
+        assert_eq!(loc.city, None);
+        assert_eq!(loc.country_code.as_deref(), Some("FR"));
+        // Preserves pre-populated ASN & ISP from ip.guide
+        assert_eq!(loc.asn, Some(1299));
+        assert_eq!(loc.isp.as_deref(), Some("Arelion"));
+        assert_eq!(loc.short_place(), "FR");
     }
 
     #[tokio::test]

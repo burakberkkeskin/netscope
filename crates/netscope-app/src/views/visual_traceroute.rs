@@ -1049,13 +1049,27 @@ fn paint_world_map(ui: &mut Ui, palette: &AppPalette, state: &mut VisualTracerou
     let badge_pos = pos2(rect.right() - 10.0, rect.bottom() - 10.0);
     let located = geo_hops.len();
     let total = state.hops.len() + usize::from(state.origin_geo.is_some());
-    let label = format!("{located}/{total} points mapped (Origin + Hops)  •  Drag to pan, scroll to zoom");
+    let (label, badge_color) = if !state.running && total > 0 && located == 0 {
+        (
+            format!(
+                "0/{total} points mapped (GeoIP unreachable/blocked)  •  Drag to pan, scroll to zoom"
+            ),
+            palette.warn,
+        )
+    } else {
+        (
+            format!(
+                "{located}/{total} points mapped (Origin + Hops)  •  Drag to pan, scroll to zoom"
+            ),
+            palette.text_muted,
+        )
+    };
     painter.text(
         badge_pos,
         Align2::RIGHT_BOTTOM,
         label,
         FontId::proportional(10.5),
-        palette.text_muted,
+        badge_color,
     );
 }
 

@@ -84,6 +84,11 @@ struct IpInfoResponse {
     city: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct IpGuideSelfResponse {
+    ip: Option<String>,
+}
+
 fn classify_link_type(if_type: InterfaceType, name: &str, friendly: Option<&str>) -> LinkType {
     if matches!(
         if_type,
@@ -312,6 +317,36 @@ pub async fn fetch_public_network_status() -> PublicNetworkStatus {
                 country = info.country;
             }
             city = info.city;
+        }
+
+        // Fallback public IP lookup if both Cloudflare trace and ipinfo failed
+        if public_ip.is_none()
+            && let Ok(resp) = client.get("https://ip.guide/").send().await
+            && resp.status().is_success()
+            && let Ok(self_info) = resp.json::<IpGuideSelfResponse>().await
+            && let Some(ip_str) = self_info.ip
+            && let Ok(ip) = ip_str.trim().parse::<IpAddr>()
+        {
+            public_ip = Some(ip);
+        }
+    }
+
+    // Fallback ISP/Org/location enrichment via multi-provider GeoIP (also warms GEO_CACHE for Visual Traceroute Hop 0)
+    if isp_or_org.is_none()
+        && let Some(ip) = public_ip
+    {
+        let geo = crate::geoip::lookup_ip(ip).await;
+        isp_or_org = match (geo.asn, geo.isp) {
+            (Some(asn), Some(isp)) => Some(format!("AS{asn} {isp}")),
+            (None, Some(isp)) => Some(isp),
+            (Some(asn), None) => Some(format!("AS{asn}")),
+            (None, None) => None,
+        };
+        if city.is_none() {
+            city = geo.city;
+        }
+        if country.is_none() {
+            country = geo.country_code.or(geo.country);
         }
     }
 
