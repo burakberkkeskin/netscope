@@ -80,8 +80,11 @@ Roadmap plans and Architectural Decision Records (ADRs) live in [`plans/README.m
 - **Phase 1:** Foundation, Menu Bar Monitor, Internet Check, Ping, Traceroute, MTR, DNS Lookup, SSL Certificate Inspector — **Completed**
 - **Phase 2:** Visual Traceroute (Offline Vector Map, Deep Zoom, Hop 0 Origin, Anycast Edge PoP), Path Troubleshoot, 4-Stream Speed Test + Bufferbloat, Native Rust `iperf3` Wire Client, Persistent History — **Completed**
 - **Phase 3:** LAN Scanner + Network Guard, Port Scan + Banner Grabbing, IPv4/IPv6 Subnet Calculator + Splitter — **Completed**
-- **Phase 4:** Wi-Fi Analyzer & Channel Recommendation, DNS Propagation, Whois / RDAP & GeoIP Lookup, Email Security Check (SPF/DKIM/DMARC/MX) — **Planned**
-- **Phase 5:** Live Interface Monitor, Background Uptime Monitor & Built-in Diagnostic Guides — **Planned**
+- **Phase 4 (`v0.4.0`):** Global DNS Propagation Checker — **Planned**
+- **Phase 5 (`v0.5.0`):** Whois / RDAP & GeoIP Lookup — **Planned**
+- **Phase 6 (`v0.6.0`):** Email Security Check (`SPF`, `DKIM`, `DMARC`, `MX`) — **Planned**
+- **Phase 7 (`v0.7.0`):** Wi-Fi Analyzer & Channel Recommendation — **Planned**
+- **Phase 8 (`v0.8.0`):** Live Interface Monitor — **Planned**
 
 ---
 

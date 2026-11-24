@@ -20,5 +20,10 @@ Chronological roadmap, architectural decision records (ADRs), and task checklist
 | **01** | [`01-foundation-and-core-diagnostics.md`](./01-foundation-and-core-diagnostics.md) | Workspace, Menu Bar/Tray (Public IP, VPN, DNS Leak), Internet Check, Ping, Traceroute, MTR (Heatmap + Outage Log), DNS Lookup, SSL/TLS Chain Inspector | ✅ **Completed** |
 | **02** | [`02-ui-fixes-map-troubleshoot-speedtest-iperf3.md`](./02-ui-fixes-map-troubleshoot-speedtest-iperf3.md) | UI Bug Fixes, Persistent Host/Server History, Visual Traceroute (Offline Vector World Map + GeoIP), Hop-by-Hop Path Troubleshoot, 4-Stream Speed Test (Bufferbloat), `iperf3` Client | ✅ **Completed** |
 | **03** | [`03-lan-discovery-and-port-scanner.md`](./03-lan-discovery-and-port-scanner.md) | LAN Scanner (ARP + PTR + OUI), Network Guard alerts, TCP/UDP Port Scan + banner/service detection, Subnet Calculator & Splitter | ✅ **Completed** |
-| **04** | `04-wifi-analyzer-and-domain-tools.md` | Wi-Fi Analyzer & Channel Recommendation (`CoreWLAN` / `nl80211` / WLAN API), DNS Propagation, Whois/RDAP, Email Check (SPF/DKIM/DMARC/MX) | 📋 **Planned** |
-| **05** | `05-monitors-history-and-reports.md` | Live Interface Monitor, Uptime Monitor (SQLite 1-yr history, alerts, PDF reports), Built-in Guides | 📋 **Planned** |
+| **04 (`v0.4.0`)** | `04-dns-propagation.md` | Global DNS Propagation Checker (System + 13 RFC 8484 DoH resolvers, consensus & expected-value matching) | 📋 **Planned** |
+| **05 (`v0.5.0`)** | `05-whois-rdap-geoip.md` | Whois / RDAP & GeoIP Lookup (IANA RDAP bootstrap + port-43 WHOIS fallback + GeoIP/ASN/PTR) | 📋 **Planned** |
+| **06 (`v0.6.0`)** | `06-email-security-check.md` | Email Security Check (`SPF` recursive lookup audit, `DKIM`, `DMARC`, `MX`) | 📋 **Planned** |
+| **07 (`v0.7.0`)** | `07-wifi-analyzer.md` | Wi-Fi Analyzer & Channel Recommendation (`CoreWLAN` / `nl80211` / WLAN API) | 📋 **Planned** |
+| **08 (`v0.8.0`)** | `08-live-interface-monitor.md` | Live Interface Monitor (real-time per-interface Rx/Tx throughput, packet/error stats) | 📋 **Planned** |
+
+> **Scope Notes:** `Background Uptime Monitor` was dropped as out-of-scope for an interactive desktop diagnostics utility. `Built-in Diagnostic Guides` is pending scope review.
