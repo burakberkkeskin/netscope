@@ -320,12 +320,33 @@ pub async fn reverse_dns_cached(
 
 /// Performs one unprivileged ICMP probe with specified TTL and sequence number.
 pub async fn probe_once(target: IpAddr, ttl: u8, seq: u16, timeout: Duration) -> ProbeOutcome {
-    tokio::task::spawn_blocking(move || probe_once_blocking(target, ttl, seq, timeout))
+    let dest_addr = SocketAddr::new(target, 0);
+    tokio::task::spawn_blocking(move || probe_once_sockaddr_blocking(dest_addr, ttl, seq, timeout))
         .await
         .unwrap_or_else(|e| ProbeOutcome::Error(e.to_string()))
 }
 
-fn probe_once_blocking(target: IpAddr, ttl: u8, seq: u16, timeout: Duration) -> ProbeOutcome {
+/// Performs one unprivileged ICMPv6 probe toward a scoped IPv6 address (e.g. `fe80::...%scope_id`).
+pub async fn probe_once_v6_scoped(
+    target: std::net::Ipv6Addr,
+    scope_id: u32,
+    ttl: u8,
+    seq: u16,
+    timeout: Duration,
+) -> ProbeOutcome {
+    let dest_addr = SocketAddr::V6(std::net::SocketAddrV6::new(target, 0, 0, scope_id));
+    tokio::task::spawn_blocking(move || probe_once_sockaddr_blocking(dest_addr, ttl, seq, timeout))
+        .await
+        .unwrap_or_else(|e| ProbeOutcome::Error(e.to_string()))
+}
+
+fn probe_once_sockaddr_blocking(
+    dest_addr: SocketAddr,
+    ttl: u8,
+    seq: u16,
+    timeout: Duration,
+) -> ProbeOutcome {
+    let target = dest_addr.ip();
     let is_v6 = target.is_ipv6();
     let domain = if is_v6 { Domain::IPV6 } else { Domain::IPV4 };
     let proto = if is_v6 {
@@ -356,7 +377,7 @@ fn probe_once_blocking(target: IpAddr, ttl: u8, seq: u16, timeout: Duration) -> 
 
     let id = ((std::process::id() as u16) & 0xFF00) ^ NEXT_PROBE_ID.fetch_add(1, Ordering::Relaxed);
     let packet = build_icmp_echo_packet(is_v6, id, seq, b"NetScopeICMP01");
-    let dest = SockAddr::from(SocketAddr::new(target, 0));
+    let dest = SockAddr::from(dest_addr);
 
     let started = Instant::now();
     if let Err(e) = sock.send_to(&packet, &dest) {

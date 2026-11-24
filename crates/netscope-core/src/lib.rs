@@ -5,6 +5,7 @@ pub mod history;
 pub mod icmp;
 pub mod internet_check;
 pub mod iperf3;
+pub mod ipv6_check;
 pub mod lan_scanner;
 pub mod net_info;
 pub mod path_troubleshoot;

@@ -5,6 +5,7 @@ use crate::views::dns::DnsState;
 use crate::views::dns_propagation::DnsPropagationState;
 use crate::views::internet_check::InternetCheckState;
 use crate::views::iperf3::Iperf3State;
+use crate::views::ipv6_check::Ipv6CheckState;
 use crate::views::lan_scanner::{LanJumpAction, LanScannerState};
 use crate::views::mtr::MtrState;
 use crate::views::path_troubleshoot::PathTroubleshootState;
@@ -31,6 +32,7 @@ use tracing::{error, info};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolTab {
     InternetCheck,
+    Ipv6Diagnostics,
     PathTroubleshoot,
     Ping,
     Traceroute,
@@ -50,6 +52,7 @@ impl ToolTab {
     pub fn title(self) -> &'static str {
         match self {
             Self::InternetCheck => "Internet Check",
+            Self::Ipv6Diagnostics => "IPv6 Diagnostics",
             Self::PathTroubleshoot => "Path Troubleshoot",
             Self::Ping => "Ping",
             Self::Traceroute => "Traceroute",
@@ -84,6 +87,7 @@ pub struct NetScopeApp {
     status_refreshing: bool,
 
     internet_check: InternetCheckState,
+    ipv6_check: Ipv6CheckState,
     path_troubleshoot: PathTroubleshootState,
     ping: PingState,
     traceroute: TracerouteState,
@@ -158,6 +162,7 @@ impl NetScopeApp {
             last_status_refresh: Instant::now(),
             status_refreshing: false,
             internet_check: InternetCheckState::default(),
+            ipv6_check: Ipv6CheckState::default(),
             path_troubleshoot: PathTroubleshootState::default(),
             ping: PingState::default(),
             traceroute: TracerouteState::default(),
@@ -226,6 +231,7 @@ impl eframe::App for NetScopeApp {
                     TrayAction::Quit => {
                         self.should_quit = true;
                         self.internet_check.stop();
+                        self.ipv6_check.stop();
                         self.path_troubleshoot.stop();
                         self.ping.stop();
                         self.traceroute.stop();
@@ -255,6 +261,7 @@ impl eframe::App for NetScopeApp {
         }
 
         self.internet_check.poll();
+        self.ipv6_check.poll();
         self.path_troubleshoot.poll();
         self.ping.poll();
         self.traceroute.poll();
@@ -322,6 +329,12 @@ impl eframe::App for NetScopeApp {
                             &palette,
                             ToolTab::InternetCheck,
                             self.internet_check.running,
+                        );
+                        self.nav_button(
+                            ui,
+                            &palette,
+                            ToolTab::Ipv6Diagnostics,
+                            self.ipv6_check.running,
                         );
                         self.nav_button(
                             ui,
@@ -471,6 +484,7 @@ impl eframe::App for NetScopeApp {
                         if ui.small_button("Clear").clicked() {
                             match self.active_tool {
                                 ToolTab::InternetCheck => self.internet_check.clear(),
+                                ToolTab::Ipv6Diagnostics => self.ipv6_check.clear(),
                                 ToolTab::PathTroubleshoot => self.path_troubleshoot.clear(),
                                 ToolTab::Ping => self.ping.clear(),
                                 ToolTab::Traceroute => self.traceroute.clear(),
@@ -490,13 +504,17 @@ impl eframe::App for NetScopeApp {
                         }
                         if matches!(
                             self.active_tool,
-                            ToolTab::LanScanner | ToolTab::PortScan | ToolTab::DnsPropagation
+                            ToolTab::LanScanner
+                                | ToolTab::PortScan
+                                | ToolTab::DnsPropagation
+                                | ToolTab::Ipv6Diagnostics
                         ) && ui.small_button("Copy Output").clicked()
                         {
                             let txt = match self.active_tool {
                                 ToolTab::LanScanner => self.lan_scanner.copy_text(),
                                 ToolTab::PortScan => self.port_scan.copy_text(),
                                 ToolTab::DnsPropagation => self.dns_propagation.copy_text(),
+                                ToolTab::Ipv6Diagnostics => self.ipv6_check.copy_text(),
                                 _ => String::new(),
                             };
                             ui.ctx().copy_text(txt);
@@ -520,6 +538,12 @@ impl eframe::App for NetScopeApp {
                             self.path_troubleshoot.start(&self.rt, ui.ctx());
                         }
                     }
+                    ToolTab::Ipv6Diagnostics => views::ipv6_check::render(
+                        ui,
+                        &palette,
+                        &mut self.ipv6_check,
+                        &self.rt,
+                    ),
                     ToolTab::PathTroubleshoot => views::path_troubleshoot::render(
                         ui,
                         &palette,
@@ -669,7 +693,7 @@ impl NetScopeApp {
             return;
         };
 
-        const STEPS: [(ToolTab, &str, bool); 15] = [
+        const STEPS: [(ToolTab, &str, bool); 17] = [
             (ToolTab::InternetCheck, "01-internet-check-light.png", false),
             (ToolTab::PathTroubleshoot, "02-path-troubleshoot.png", false),
             (ToolTab::VisualTraceroute, "03-visual-traceroute.png", false),
@@ -689,6 +713,8 @@ impl NetScopeApp {
             (ToolTab::PortScan, "13-port-scan.png", false),
             (ToolTab::SubnetCalculator, "14-subnet-calculator.png", false),
             (ToolTab::DnsPropagation, "15-dns-propagation.png", false),
+            (ToolTab::Ipv6Diagnostics, "16-ipv6-diagnostics.png", false),
+            (ToolTab::Ipv6Diagnostics, "17-ipv6-diagnostics-dark.png", true),
         ];
 
         if driver.step >= STEPS.len() {
@@ -730,6 +756,7 @@ impl NetScopeApp {
                         self.port_scan.start(&self.rt, ctx);
                     }
                     14 => self.dns_propagation.start(&self.rt, ctx),
+                    15 => self.ipv6_check.start(&self.rt, ctx),
                     _ => {}
                 }
                 driver.phase = ShotPhase::WaitData;
@@ -753,6 +780,7 @@ impl NetScopeApp {
                     11 => !self.lan_scanner.running || elapsed >= Duration::from_secs(12),
                     12 => !self.port_scan.running || elapsed >= Duration::from_secs(6),
                     14 => !self.dns_propagation.running || elapsed >= Duration::from_secs(7),
+                    15 => !self.ipv6_check.running || elapsed >= Duration::from_secs(10),
                     _ => elapsed >= Duration::from_millis(250),
                 };
                 if ready {
@@ -763,6 +791,7 @@ impl NetScopeApp {
                         11 => self.lan_scanner.stop(),
                         12 => self.port_scan.stop(),
                         14 => self.dns_propagation.stop(),
+                        15 => self.ipv6_check.stop(),
                         _ => {}
                     }
                     driver.phase = ShotPhase::SettleFrames(3);

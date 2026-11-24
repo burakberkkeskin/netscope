@@ -8,11 +8,12 @@ A cross-platform (**macOS**, **Linux**, **Windows**), pure-Rust native network d
 
 ---
 
-## Features & Tools (14 Built-In Modules)
+## Features & Tools (15 Built-In Modules)
 
 ### Diagnostics
 - **Menu Bar / System Tray Monitor:** Keeps running after closing the main window; displays public IP, ASN/ISP, VPN interface status (`utun`, `wg`, `tailscale`, etc.), and DNS egress consistency (`DNS Matches` / `Upstream DNS` / `DNS Leak!`).
 - **Internet Check:** 5-stage visual pipeline (`This Host -> Router -> Internet -> DNS -> Web`) pinpointing whether an outage is on your machine, local router, ISP link, DNS resolver, or HTTP stack—tolerating routers that drop ICMP echo when upstream connectivity works.
+- **IPv6 Diagnostics:** 6-stage IPv6 readiness suite (`Local Stack -> Router (NDP) -> ICMPv6 -> DNS v6 -> HTTPS v6 -> PMTUD`) inspecting GUA/SLAAC/ULA addressing, Router Advertisement flags (`M`/`O`/`A`/`L`) & lifetimes, scoped link-local gateway reachability, `AAAA` & IPv6 DoH transport, Dual-Stack parity (`IPv6` vs `IPv4`, Happy Eyeballs & PoP peering), NAT66 detection, and unprivileged 32 KB full-MSS PMTUD blackhole detection.
 - **Path Troubleshoot:** Hop-by-hop latency waterfall classifying segments (`LAN`, `CGNAT`, `ISP`, `Transit`, `Target`) and filtering mid-hop ICMP control-plane rate-limiting.
 - **Ping:** Unprivileged `SOCK_DGRAM` ICMPv4/v6 pinger with live RTT plot, jitter/median/loss telemetry, and sample log.
 - **Traceroute:** Multi-probe hop discovery with parallel reverse DNS (`PTR`) resolution and RTT stats.
@@ -82,10 +83,11 @@ Roadmap plans and Architectural Decision Records (ADRs) live in [`plans/README.m
 - **Phase 2:** Visual Traceroute (Offline Vector Map, Deep Zoom, Hop 0 Origin, Anycast Edge PoP), Path Troubleshoot, 4-Stream Speed Test + Bufferbloat, Native Rust `iperf3` Wire Client, Persistent History — **Completed**
 - **Phase 3:** LAN Scanner + Network Guard, Port Scan + Banner Grabbing, IPv4/IPv6 Subnet Calculator + Splitter — **Completed**
 - **Phase 4 (`v0.4.0`):** Global DNS Propagation Checker — **Completed**
-- **Phase 5 (`v0.5.0`):** Whois / RDAP & GeoIP Lookup — **Planned**
-- **Phase 6 (`v0.6.0`):** Email Security Check (`SPF`, `DKIM`, `DMARC`, `MX`) — **Planned**
-- **Phase 7 (`v0.7.0`):** Wi-Fi Analyzer & Channel Recommendation — **Planned**
-- **Phase 8 (`v0.8.0`):** Live Interface Monitor — **Planned**
+- **Phase 5 (`v0.5.0`):** IPv6 Diagnostics & Readiness Suite — **Completed**
+- **Phase 6 (`v0.6.0`):** Whois / RDAP & GeoIP Lookup — **Planned**
+- **Phase 7 (`v0.7.0`):** Email Security Check (`SPF`, `DKIM`, `DMARC`, `MX`) — **Planned**
+- **Phase 8 (`v0.8.0`):** Wi-Fi Analyzer & Channel Recommendation — **Planned**
+- **Phase 9 (`v0.9.0`):** Live Interface Monitor — **Planned**
 
 ---
 
