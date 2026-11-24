@@ -1,19 +1,22 @@
 use crate::theme::{AppPalette, section_label, status_pill};
-use crate::widgets::{HistoryPickAction, host_history_picker, nice_y_grid_spacer};
+use crate::widgets::{
+    HistoryPickAction, host_history_picker, ip_family_selector, nice_y_grid_spacer,
+};
 use egui::{Align, Layout, Ui};
 use egui_extras::{Column, TableBuilder};
 use egui_plot::{AxisHints, HLine, Legend, Line, LineStyle, Plot, PlotPoints, uniform_grid_spacer};
-use netscope_core::CancelToken;
 use netscope_core::history::{Iperf3Record, Iperf3ServerProfile, PersistedState};
 use netscope_core::iperf3::{
     Iperf3Config, Iperf3Event, Iperf3Interval, Iperf3Summary, run_iperf3,
 };
+use netscope_core::{CancelToken, IpFamily};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
 pub struct Iperf3State {
     pub profile_name: String,
     pub host: String,
+    pub ip_family: IpFamily,
     pub port: u16,
     pub duration_secs: u16,
     pub parallel_streams: u8,
@@ -37,6 +40,7 @@ impl Default for Iperf3State {
         Self {
             profile_name: "Homelab LAN".into(),
             host: "127.0.0.1".into(),
+            ip_family: IpFamily::Auto,
             port: 5201,
             duration_secs: 10,
             parallel_streams: 4,
@@ -82,6 +86,7 @@ impl Iperf3State {
             omit_secs: self.omit_secs,
             buffer_len_bytes,
             no_delay: self.no_delay,
+            ip_family: self.ip_family,
         };
 
         let (tx, rx) = mpsc::unbounded_channel();
@@ -268,6 +273,7 @@ pub fn render(
         }
         ui.label("Omit (-O s):");
         ui.add(egui::DragValue::new(&mut state.omit_secs).range(0..=10));
+        ip_family_selector(ui, palette, &mut state.ip_family);
     });
 
     if let Some(ref err) = state.error {

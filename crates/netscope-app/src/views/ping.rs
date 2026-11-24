@@ -1,15 +1,18 @@
 use crate::theme::{AppPalette, section_label, status_pill};
-use crate::widgets::{HistoryPickAction, host_history_picker, nice_y_grid_spacer};
+use crate::widgets::{
+    HistoryPickAction, format_resolved_ip_pill, host_history_picker, ip_family_selector,
+    nice_y_grid_spacer,
+};
 use egui::Ui;
 use egui_extras::{Column, TableBuilder};
 use egui_plot::{
     AxisHints, HLine, Legend, Line, LineStyle, MarkerShape, Plot, PlotPoints, Points,
     uniform_grid_spacer,
 };
-use netscope_core::CancelToken;
 use netscope_core::history::PersistedState;
 use netscope_core::icmp::{PingConfig, PingEvent, PingSample, run_ping};
 use netscope_core::stats::{LatencyStats, compute_latency_stats};
+use netscope_core::{CancelToken, IpFamily};
 use std::net::IpAddr;
 use std::time::Duration;
 use tokio::runtime::Runtime;
@@ -17,6 +20,7 @@ use tokio::sync::mpsc;
 
 pub struct PingState {
     pub host: String,
+    pub ip_family: IpFamily,
     pub interval_ms: u64,
     pub running: bool,
     pub resolved_ip: Option<IpAddr>,
@@ -31,6 +35,7 @@ impl Default for PingState {
     fn default() -> Self {
         Self {
             host: "1.1.1.1".into(),
+            ip_family: IpFamily::Auto,
             interval_ms: 1000,
             running: false,
             resolved_ip: None,
@@ -56,6 +61,7 @@ impl PingState {
             interval: Duration::from_millis(self.interval_ms),
             timeout: Duration::from_secs(2),
             count: None,
+            ip_family: self.ip_family,
         };
         let (tx, rx) = mpsc::unbounded_channel();
         let cancel = CancelToken::new();
@@ -156,6 +162,8 @@ pub fn render(
             }
         }
 
+        ip_family_selector(ui, palette, &mut state.ip_family);
+
         ui.label("Interval:");
         egui::ComboBox::from_id_salt("ping_interval")
             .selected_text(format!("{:.1}s", state.interval_ms as f64 / 1000.0))
@@ -183,7 +191,12 @@ pub fn render(
 
         if let Some(ip) = state.resolved_ip {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                status_pill(ui, &ip.to_string(), palette.accent, palette.card_subtle_bg);
+                status_pill(
+                    ui,
+                    &format_resolved_ip_pill(ip),
+                    palette.accent,
+                    palette.card_subtle_bg,
+                );
             });
         }
     });

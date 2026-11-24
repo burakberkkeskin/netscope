@@ -1,14 +1,16 @@
 use crate::theme::{AppPalette, section_label, status_pill};
-use crate::widgets::{HistoryPickAction, host_history_picker};
+use crate::widgets::{
+    HistoryPickAction, format_resolved_ip_pill, host_history_picker, ip_family_selector,
+};
 use egui::epaint::{PathShape, PathStroke, Vertex, WHITE_UV};
 use egui::{
     Align, Align2, Color32, FontId, Layout, Mesh, Pos2, Sense, Shape, Stroke, Ui, pos2, vec2,
 };
-use netscope_core::CancelToken;
 use netscope_core::geoip::{GeoLocation, lookup_ip, reconcile_hop_with_speed_of_light};
 use netscope_core::history::PersistedState;
 use netscope_core::icmp::{TracerouteEvent, TracerouteHop, run_traceroute};
 use netscope_core::net_info::fetch_public_network_status;
+use netscope_core::{CancelToken, IpFamily};
 use std::net::IpAddr;
 use std::sync::OnceLock;
 use tokio::runtime::Runtime;
@@ -100,6 +102,7 @@ pub enum VisualTraceMsg {
 
 pub struct VisualTracerouteState {
     pub host: String,
+    pub ip_family: IpFamily,
     pub max_hops: u8,
     pub running: bool,
     pub resolved_ip: Option<IpAddr>,
@@ -118,6 +121,7 @@ impl Default for VisualTracerouteState {
     fn default() -> Self {
         Self {
             host: "cloudflare.com".into(),
+            ip_family: IpFamily::Auto,
             max_hops: 30,
             running: false,
             resolved_ip: None,
@@ -143,6 +147,7 @@ impl VisualTracerouteState {
 
         let host = self.host.clone();
         let max_hops = self.max_hops;
+        let ip_family = self.ip_family;
         let (tx, rx) = mpsc::unbounded_channel();
         let cancel = CancelToken::new();
         self.cancel = Some(cancel.clone());
@@ -152,7 +157,7 @@ impl VisualTracerouteState {
         let ctx_clone = ctx.clone();
         rt.spawn(async move {
             let (tr_tx, mut tr_rx) = mpsc::unbounded_channel();
-            let trace_fut = run_traceroute(host, max_hops, 3, tr_tx, cancel);
+            let trace_fut = run_traceroute(host, max_hops, 3, ip_family, tr_tx, cancel);
             let trace_handle = tokio::spawn(trace_fut);
 
             let mut geo_tasks = tokio::task::JoinSet::new();
@@ -366,7 +371,7 @@ pub fn render(
         ui.label("Host:");
         let resp = ui.add(
             egui::TextEdit::singleline(&mut state.host)
-                .desired_width(210.0)
+                .desired_width(190.0)
                 .hint_text("example.com or IP"),
         );
         let enter_pressed = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -383,6 +388,8 @@ pub fn render(
             }
         }
 
+        ip_family_selector(ui, palette, &mut state.ip_family);
+
         ui.label("Hops:");
         ui.add(egui::DragValue::new(&mut state.max_hops).range(1..=40));
 
@@ -397,6 +404,26 @@ pub fn render(
             }
         }
 
+        if let Some(ip) = state.resolved_ip {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                status_pill(
+                    ui,
+                    &format!("{}  •  {} hops", format_resolved_ip_pill(ip), state.hops.len()),
+                    palette.accent,
+                    palette.card_subtle_bg,
+                );
+            });
+        }
+    });
+
+    ui.add_space(4.0);
+
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Map:")
+                .size(12.0)
+                .color(palette.text_muted),
+        );
         if ui.button("Fit Route").clicked() {
             state.fit_route();
         }
@@ -412,17 +439,6 @@ pub fn render(
         ui.monospace(format!("{:.1}x", state.zoom));
         if ui.small_button("+").on_hover_text("Zoom In").clicked() {
             state.zoom_by(1.35, None);
-        }
-
-        if let Some(ip) = state.resolved_ip {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                status_pill(
-                    ui,
-                    &format!("{ip}  •  {} hops", state.hops.len()),
-                    palette.accent,
-                    palette.card_subtle_bg,
-                );
-            });
         }
     });
 

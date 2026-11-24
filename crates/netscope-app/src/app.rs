@@ -3,7 +3,7 @@ use crate::tray::{TrayAction, TrayController};
 use crate::views;
 use crate::views::dns::{DnsJumpAction, DnsState};
 use crate::views::dns_propagation::DnsPropagationState;
-use crate::views::internet_check::InternetCheckState;
+use crate::views::internet_check::{InternetCheckJump, InternetCheckState};
 use crate::views::iperf3::Iperf3State;
 use crate::views::ipv6_check::Ipv6CheckState;
 use crate::views::lan_scanner::{LanJumpAction, LanScannerState};
@@ -616,16 +616,23 @@ impl NetScopeApp {
 
                 match self.active_tool {
                     ToolTab::InternetCheck => {
-                        let jump = views::internet_check::render(
+                        if let Some(jump) = views::internet_check::render(
                             ui,
                             &palette,
                             &mut self.internet_check,
                             self.public_status.as_ref(),
                             &self.rt,
-                        );
-                        if jump {
-                            self.active_tool = ToolTab::PathTroubleshoot;
-                            self.path_troubleshoot.start(&self.rt, ui.ctx());
+                        ) {
+                            match jump {
+                                InternetCheckJump::TroubleshootHops => {
+                                    self.active_tool = ToolTab::PathTroubleshoot;
+                                    self.path_troubleshoot.start(&self.rt, ui.ctx());
+                                }
+                                InternetCheckJump::Ipv6Check => {
+                                    self.active_tool = ToolTab::Ipv6Diagnostics;
+                                    self.ipv6_check.start(&self.rt, ui.ctx());
+                                }
+                            }
                         }
                     }
                     ToolTab::Ipv6Diagnostics => views::ipv6_check::render(
@@ -1569,6 +1576,7 @@ mod ui_e2e_tests {
             },
         ];
 
+        app.visual_traceroute.resolved_ip = Some("2001:db8:40::10".parse().unwrap());
         app.visual_traceroute.fit_route();
         let out = run_frame(&ctx, &mut app, Vec::new());
         assert!(has_rendered_text(&out, "Ereğli"));
@@ -1577,5 +1585,79 @@ mod ui_e2e_tests {
         app.dark_mode = true;
         let out = run_frame(&ctx, &mut app, Vec::new());
         assert!(out.shapes.len() > 20);
+        let pill_pos = all_rendered_texts(&out)
+            .into_iter()
+            .find(|(t, _)| t.contains("IPv6 · 2001:db8:40::10"))
+            .map(|(_, pos)| pos)
+            .expect("IPv6 resolved pill must be rendered on Row 1");
+        let reset_pos = find_text_center(&out, "Reset View")
+            .expect("Reset View button must remain visible on Row 2");
+        assert!(
+            find_text_center(&out, "Fit Route").is_some(),
+            "Fit Route button must remain visible on Row 2"
+        );
+        assert!(
+            find_text_center(&out, "Türkiye").is_some(),
+            "Türkiye button must remain visible on Row 2"
+        );
+        assert!(
+            find_text_center(&out, "+").is_some(),
+            "Zoom + button must remain visible on Row 2"
+        );
+        assert!(
+            reset_pos.y > pill_pos.y + 8.0,
+            "Map controls (y={:.1}) must sit cleanly below Row 1 resolved pill (y={:.1})",
+            reset_pos.y,
+            pill_pos.y
+        );
+    }
+
+    #[test]
+    fn e2e_ip_family_selector_and_internet_check_ipv6_jump() {
+        let ctx = egui::Context::default();
+        let mut app = NetScopeApp::new_headless_for_test();
+
+        app.active_tool = ToolTab::Ping;
+        let out = run_frame(&ctx, &mut app, Vec::new());
+        assert!(has_rendered_text(&out, "Auto"));
+        assert!(has_rendered_text(&out, "IPv4"));
+        assert!(has_rendered_text(&out, "IPv6"));
+        assert_eq!(app.ping.ip_family, netscope_core::IpFamily::Auto);
+
+        let v6_pos = find_text_center(&out, "IPv6").expect("Ping IPv6 toggle must be visible");
+        let out = click_at(&ctx, &mut app, v6_pos);
+        assert_eq!(app.ping.ip_family, netscope_core::IpFamily::Ipv6);
+
+        let v4_pos = find_text_center(&out, "IPv4").expect("Ping IPv4 toggle must be visible");
+        let _ = click_at(&ctx, &mut app, v4_pos);
+        assert_eq!(app.ping.ip_family, netscope_core::IpFamily::Ipv4);
+
+        for tab in [
+            ToolTab::Traceroute,
+            ToolTab::VisualTraceroute,
+            ToolTab::Mtr,
+            ToolTab::PortScan,
+            ToolTab::Iperf3,
+        ] {
+            app.active_tool = tab;
+            let out = run_frame(&ctx, &mut app, Vec::new());
+            assert!(has_rendered_text(&out, "Auto"), "missing Auto on {tab:?}");
+            assert!(has_rendered_text(&out, "IPv4"), "missing IPv4 on {tab:?}");
+            assert!(has_rendered_text(&out, "IPv6"), "missing IPv6 on {tab:?}");
+            if tab == ToolTab::VisualTraceroute {
+                assert!(
+                    find_text_center(&out, "Türkiye").is_some(),
+                    "Türkiye button must remain visible after adding IpFamily selector"
+                );
+            }
+        }
+
+        app.active_tool = ToolTab::InternetCheck;
+        let out = run_frame(&ctx, &mut app, Vec::new());
+        let jump_pos = find_text_center(&out, "IPv6 Check ->")
+            .expect("Internet Check IPv6 jump button must be visible");
+        let _ = click_at(&ctx, &mut app, jump_pos);
+        assert_eq!(app.active_tool, ToolTab::Ipv6Diagnostics);
+        app.ipv6_check.stop();
     }
 }

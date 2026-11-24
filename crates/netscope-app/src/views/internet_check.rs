@@ -85,15 +85,21 @@ impl InternetCheckState {
     }
 }
 
-/// Renders Internet Check and returns `true` if user clicked "Troubleshoot Hops".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InternetCheckJump {
+    TroubleshootHops,
+    Ipv6Check,
+}
+
+/// Renders Internet Check and returns an optional quick-jump action.
 pub fn render(
     ui: &mut Ui,
     palette: &AppPalette,
     state: &mut InternetCheckState,
     public_status: Option<&PublicNetworkStatus>,
     rt: &Runtime,
-) -> bool {
-    let mut jump_to_troubleshoot = false;
+) -> Option<InternetCheckJump> {
+    let mut jump = None;
 
     ui.horizontal(|ui| {
         let btn_label = if state.running {
@@ -120,8 +126,19 @@ pub fn render(
                 .on_hover_text("Run hop-by-hop latency & loss root-cause analysis")
                 .clicked()
             {
-                jump_to_troubleshoot = true;
+                jump = Some(InternetCheckJump::TroubleshootHops);
             }
+        }
+
+        if ui
+            .button("IPv6 Check ->")
+            .on_hover_text("Open IPv6 Check (GUA/SLAAC, NDP, ICMPv6, Dual-Stack & PMTUD)")
+            .clicked()
+        {
+            jump = Some(InternetCheckJump::Ipv6Check);
+        }
+
+        if let Some(ref r) = state.current {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let (fg, bg) = match r.verdict.severity {
                     VerdictSeverity::Ok => (palette.ok, palette.ok_bg),
@@ -154,7 +171,7 @@ pub fn render(
                 ui.add_space(24.0);
             });
         });
-        return jump_to_troubleshoot;
+        return jump;
     };
 
     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -419,7 +436,7 @@ pub fn render(
         });
     });
 
-    jump_to_troubleshoot
+    jump
 }
 
 fn health_color(palette: &AppPalette, health: StageHealth) -> Color32 {

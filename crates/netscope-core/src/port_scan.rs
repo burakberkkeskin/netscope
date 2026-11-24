@@ -1,4 +1,4 @@
-use crate::CancelToken;
+use crate::{CancelToken, IpFamily};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpStream, UdpSocket, lookup_host};
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{Semaphore, mpsc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +87,7 @@ pub struct PortScanConfig {
     pub concurrency: usize,
     pub timeout_ms: u64,
     pub grab_banners: bool,
+    pub ip_family: IpFamily,
 }
 
 impl Default for PortScanConfig {
@@ -98,6 +99,7 @@ impl Default for PortScanConfig {
             concurrency: 64,
             timeout_ms: 750,
             grab_banners: true,
+            ip_family: IpFamily::Auto,
         }
     }
 }
@@ -253,21 +255,20 @@ pub async fn run_port_scan(
         }
     };
 
-    let lookup_str = if host.contains(':') && !host.starts_with('[') {
-        format!("[{host}]:80")
-    } else {
-        format!("{host}:80")
-    };
-    let target_ip = match tokio::time::timeout(Duration::from_secs(4), lookup_host(&lookup_str)).await {
-        Ok(Ok(mut addrs)) => match addrs.next() {
-            Some(sa) => sa.ip(),
-            None => {
-                let _ = tx.send(PortScanEvent::Error(format!("No IP found for {host}")));
-                return;
-            }
-        },
-        _ => {
-            let _ = tx.send(PortScanEvent::Error(format!("Failed resolving host {host}")));
+    let host = host.trim_matches(|c| c == '[' || c == ']').to_string();
+    let target_ip = match tokio::time::timeout(
+        Duration::from_secs(4),
+        crate::icmp::resolve_host_with_family(&host, cfg.ip_family),
+    )
+    .await
+    {
+        Ok(Ok(ip)) => ip,
+        Ok(Err(e)) => {
+            let _ = tx.send(PortScanEvent::Error(e.to_string()));
+            return;
+        }
+        Err(_) => {
+            let _ = tx.send(PortScanEvent::Error(format!("Timed out resolving host {host}")));
             return;
         }
     };

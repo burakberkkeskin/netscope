@@ -19,6 +19,25 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
+/// IP address family selection for active probing tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum IpFamily {
+    #[default]
+    Auto,
+    Ipv4,
+    Ipv6,
+}
+
+impl IpFamily {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::Ipv4 => "IPv4",
+            Self::Ipv6 => "IPv6",
+        }
+    }
+}
+
 /// Shared error type across `netscope-core` diagnostic engines.
 #[derive(Debug, Error)]
 pub enum NetError {

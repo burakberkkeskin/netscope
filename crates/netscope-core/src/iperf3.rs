@@ -1,4 +1,4 @@
-use crate::CancelToken;
+use crate::{CancelToken, IpFamily};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpStream, UdpSocket, lookup_host};
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
 
 // iperf3 wire control state constants (from ESnet iperf3 src/iperf_api.h)
@@ -58,6 +58,9 @@ pub struct Iperf3Config {
     /// `-N` set TCP_NODELAY (disable Nagle's algorithm)
     #[serde(default)]
     pub no_delay: bool,
+    /// Optional IP family constraint (`Auto`, `IPv4`, `IPv6`)
+    #[serde(default)]
+    pub ip_family: IpFamily,
 }
 
 impl Default for Iperf3Config {
@@ -74,6 +77,7 @@ impl Default for Iperf3Config {
             omit_secs: 0,
             buffer_len_bytes: 0,
             no_delay: false,
+            ip_family: IpFamily::Auto,
         }
     }
 }
@@ -231,17 +235,15 @@ async fn run_iperf3_wire(
         return Err("Target server host cannot be empty".into());
     }
 
-    let addr_str = if host.contains(':') && !host.starts_with('[') {
-        format!("[{host}]:{}", cfg.port)
-    } else {
-        format!("{host}:{}", cfg.port)
-    };
-    let target_addr: SocketAddr = tokio::time::timeout(Duration::from_secs(4), lookup_host(&addr_str))
-        .await
-        .map_err(|_| format!("DNS lookup timed out for {host}"))?
-        .map_err(|e| format!("Failed resolving {host}: {e}"))?
-        .next()
-        .ok_or_else(|| format!("No IP address found for {host}"))?;
+    let clean_host = host.trim_matches(|c| c == '[' || c == ']');
+    let target_ip: IpAddr = tokio::time::timeout(
+        Duration::from_secs(4),
+        crate::icmp::resolve_host_with_family(clean_host, cfg.ip_family),
+    )
+    .await
+    .map_err(|_| format!("DNS lookup timed out for {host}"))?
+    .map_err(|e| e.to_string())?;
+    let target_addr = SocketAddr::new(target_ip, cfg.port);
 
     // 1. Connect TCP Control Channel & send 37-byte session cookie
     let mut ctrl = tokio::time::timeout(Duration::from_secs(4), TcpStream::connect(target_addr))

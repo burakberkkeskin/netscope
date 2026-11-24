@@ -12,11 +12,12 @@ A cross-platform (**macOS**, **Linux**, **Windows**), pure-Rust native network d
 
 ### Health Checks
 - **Menu Bar / System Tray Monitor:** Optional toggleable system tray icon (`Tray: On` / `Tray: Off` in the sidebar); when enabled, keeps running after closing the main window and displays public IP, ASN/ISP, VPN interface status (`utun`, `wg`, `tailscale`, etc.), and DNS egress consistency (`DNS Matches` / `Upstream DNS` / `DNS Leak!`). When disabled, closing the window quits cleanly.
-- **Internet Check:** 5-stage visual pipeline (`This Host -> Router -> Internet -> DNS -> Web`) pinpointing whether an outage is on your machine, local router, ISP link, DNS resolver, or HTTP stack—tolerating routers that drop ICMP echo when upstream connectivity works.
+- **Internet Check:** 5-stage visual pipeline (`This Host -> Router -> Internet -> DNS -> Web`) pinpointing whether an outage is on your machine, local router, ISP link, DNS resolver, or HTTP stack—tolerating routers that drop ICMP echo when upstream connectivity works, with one-click jumps to **Path Troubleshoot** and **IPv6 Check**.
 - **IPv6 Check:** 6-stage IPv6 readiness suite (`Local Stack -> Router (NDP) -> ICMPv6 -> DNS v6 -> HTTPS v6 -> PMTUD`) inspecting GUA/SLAAC/ULA addressing, Router Advertisement flags (`M`/`O`/`A`/`L`) & lifetimes, scoped link-local gateway reachability, `AAAA` & IPv6 DoH transport, Dual-Stack parity (`IPv6` vs `IPv4`, Happy Eyeballs & PoP peering), NAT66 detection, and unprivileged 32 KB full-MSS PMTUD blackhole detection.
 - **Path Troubleshoot:** Hop-by-hop latency waterfall classifying segments (`LAN`, `CGNAT`, `ISP`, `Transit`, `Target`) and filtering mid-hop ICMP control-plane rate-limiting.
 
 ### Path & Probes
+All probing tools below support an `[Auto | IPv4 | IPv6]` stack selector to force `A` or `AAAA` target resolution on dual-stack hosts:
 - **Ping:** Unprivileged `SOCK_DGRAM` ICMPv4/v6 pinger with live RTT plot, jitter/median/loss telemetry, and sample log.
 - **Traceroute:** Multi-probe hop discovery with parallel reverse DNS (`PTR`) resolution and RTT stats.
 - **Visual Traceroute:** Offline embedded Natural Earth 50m vector world map (with country borders, zero external tile servers) featuring 32x cursor-anchored zoom, quick regional focus, `Hop 0` public egress origin plotting, radial co-located hop separation, and **Anycast Edge PoP detection** (`CF-RAY` / `x-amz-cf-pop` / `x-served-by` IATA matching + fiber speed-of-light RTT validation).
@@ -24,11 +25,11 @@ A cross-platform (**macOS**, **Linux**, **Windows**), pure-Rust native network d
 
 ### Bandwidth
 - **Speed Test:** 4-stream parallel HTTP/1.1 download/upload throughput test with a 4-step phase stepper, peak Mbps / jitter telemetry, area-filled throughput charts, persistent run history, and a detailed **Bufferbloat Analyzer (`A+..F`)** featuring idle/DL/UL latency breakdown, Loaded RTT timeline, per-workload readiness pills (Video Calls, Gaming, VoIP, Web), and SQM recommendations.
-- **iperf3 Client:** Built-in **zero-dependency pure-Rust ESnet `iperf3` v3.17 wire-protocol client**—no OS `iperf3` binary required on the client machine. Supports `-c`, `-p`, `-t`, `-P` (1–32 streams), `-R` (reverse download), `--bidir`, `-u` (UDP with `-b` bitrate pacing & RFC 1889 jitter/loss), `-O` (omit slow-start), `-l` (buffer size), `-N` (`TCP_NODELAY`), saved server profiles, and run history.
+- **iperf3 Client:** Built-in **zero-dependency pure-Rust ESnet `iperf3` v3.17 wire-protocol client**—no OS `iperf3` binary required on the client machine. Supports `[Auto | IPv4 | IPv6]`, `-c`, `-p`, `-t`, `-P` (1–32 streams), `-R` (reverse download), `--bidir`, `-u` (UDP with `-b` bitrate pacing & RFC 1889 jitter/loss), `-O` (omit slow-start), `-l` (buffer size), `-N` (`TCP_NODELAY`), saved server profiles, and run history.
 
 ### Network Tools
 - **LAN Scanner & Network Guard:** High-speed concurrent ICMP + TCP touch sweep merged with OS ARP cache (`arp -an` / `/proc/net/arp`), IEEE OUI MAC vendor lookup, reverse DNS hostnames, quick open-service inspection (SSH, HTTP/S, SMB, AirPlay, DSM, Proxmox, Home Assistant, etc.), and **Network Guard** baseline alerts when a new device joins.
-- **Port Scan:** Concurrent TCP Connect + UDP scanner (`Common 30`, `Web & Infra`, `Top 100`, or custom port/range specs) with asynchronous protocol banner & HTTP `Server:` version detection.
+- **Port Scan:** Concurrent TCP Connect + UDP scanner (`[Auto | IPv4 | IPv6]`, `Common 30`, `Web & Infra`, `Top 100`, or custom port/range specs) with asynchronous protocol banner & HTTP `Server:` version detection.
 - **Subnet Calculator:** Instant IPv4 & IPv6 CIDR calculator displaying netmask, wildcard mask, usable range, RFC scope, binary bitmask breakdown, and an interactive **Subnet Splitter**.
 
 ### DNS & Domains

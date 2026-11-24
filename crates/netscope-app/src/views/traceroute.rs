@@ -1,16 +1,19 @@
 use crate::theme::{AppPalette, status_pill};
-use crate::widgets::{HistoryPickAction, host_history_picker};
+use crate::widgets::{
+    HistoryPickAction, format_resolved_ip_pill, host_history_picker, ip_family_selector,
+};
 use egui::{Ui, vec2};
 use egui_extras::{Column, TableBuilder};
-use netscope_core::CancelToken;
 use netscope_core::history::PersistedState;
 use netscope_core::icmp::{TracerouteEvent, TracerouteHop, run_traceroute};
+use netscope_core::{CancelToken, IpFamily};
 use std::net::IpAddr;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
 pub struct TracerouteState {
     pub host: String,
+    pub ip_family: IpFamily,
     pub max_hops: u8,
     pub running: bool,
     pub resolved_ip: Option<IpAddr>,
@@ -24,6 +27,7 @@ impl Default for TracerouteState {
     fn default() -> Self {
         Self {
             host: "cloudflare.com".into(),
+            ip_family: IpFamily::Auto,
             max_hops: 30,
             running: false,
             resolved_ip: None,
@@ -44,6 +48,7 @@ impl TracerouteState {
 
         let host = self.host.clone();
         let max_hops = self.max_hops;
+        let ip_family = self.ip_family;
         let (tx, rx) = mpsc::unbounded_channel();
         let cancel = CancelToken::new();
         self.cancel = Some(cancel.clone());
@@ -60,7 +65,7 @@ impl TracerouteState {
                     ctx_fwd.request_repaint();
                 }
             });
-            run_traceroute(host, max_hops, 3, fwd_tx, cancel).await;
+            run_traceroute(host, max_hops, 3, ip_family, fwd_tx, cancel).await;
             let _ = fwd.await;
             ctx_clone.request_repaint();
         });
@@ -136,6 +141,8 @@ pub fn render(
             }
         }
 
+        ip_family_selector(ui, palette, &mut state.ip_family);
+
         ui.label("Max Hops:");
         ui.add(egui::DragValue::new(&mut state.max_hops).range(1..=64));
 
@@ -158,7 +165,7 @@ pub fn render(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 status_pill(
                     ui,
-                    &format!("{} ({} hops)", ip, state.hops.len()),
+                    &format!("{} ({} hops)", format_resolved_ip_pill(ip), state.hops.len()),
                     palette.accent,
                     palette.card_subtle_bg,
                 );

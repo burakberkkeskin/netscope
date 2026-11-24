@@ -1,18 +1,21 @@
 use crate::theme::{AppPalette, section_label, status_pill};
-use crate::widgets::{HistoryPickAction, host_history_picker};
+use crate::widgets::{
+    HistoryPickAction, format_resolved_ip_pill, host_history_picker, ip_family_selector,
+};
 use egui::{Align, Layout, Ui};
 use egui_extras::{Column, TableBuilder};
-use netscope_core::CancelToken;
 use netscope_core::history::PersistedState;
 use netscope_core::port_scan::{
     PortPreset, PortScanConfig, PortScanEntry, PortScanEvent, run_port_scan,
 };
+use netscope_core::{CancelToken, IpFamily};
 use std::net::IpAddr;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
 pub struct PortScanState {
     pub host: String,
+    pub ip_family: IpFamily,
     pub preset: PortPreset,
     pub port_spec: String,
     pub include_udp: bool,
@@ -33,6 +36,7 @@ impl Default for PortScanState {
         let preset = PortPreset::WebAndInfra;
         Self {
             host: "127.0.0.1".into(),
+            ip_family: IpFamily::Auto,
             preset,
             port_spec: preset.spec_string().into(),
             include_udp: false,
@@ -66,6 +70,7 @@ impl PortScanState {
             concurrency: 64,
             timeout_ms: self.timeout_ms,
             grab_banners: self.grab_banners,
+            ip_family: self.ip_family,
         };
 
         let (tx, rx) = mpsc::unbounded_channel();
@@ -188,6 +193,8 @@ pub fn render(
             }
         }
 
+        ip_family_selector(ui, palette, &mut state.ip_family);
+
         ui.label("Preset:");
         for preset in [
             PortPreset::Common30,
@@ -254,7 +261,7 @@ pub fn render(
             if let Some(ip) = state.resolved_ip {
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new(format!("Target IP: {ip}"))
+                    egui::RichText::new(format!("Target {}", format_resolved_ip_pill(ip)))
                         .size(11.5)
                         .monospace()
                         .color(palette.text_muted),

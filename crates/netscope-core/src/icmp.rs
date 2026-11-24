@@ -1,5 +1,5 @@
 use crate::stats::{LatencyStats, compute_latency_stats};
-use crate::{CancelToken, NetError};
+use crate::{CancelToken, IpFamily, NetError};
 use chrono::{DateTime, Utc};
 use hickory_resolver::Resolver;
 use hickory_resolver::TokioResolver;
@@ -263,13 +263,51 @@ pub fn parse_icmpv6_packet(raw: &[u8]) -> Option<ParsedIcmpV6> {
     }
 }
 
-/// Resolves a host or literal IP string into an `IpAddr` (preferring IPv4 if both exist).
-pub async fn resolve_host(host: &str) -> Result<IpAddr, NetError> {
+fn select_ip_for_family<I>(addrs: I, family: IpFamily) -> Option<IpAddr>
+where
+    I: IntoIterator<Item = IpAddr>,
+{
+    let mut first_v4 = None;
+    let mut first_v6 = None;
+    for ip in addrs {
+        if ip.is_ipv4() && first_v4.is_none() {
+            first_v4 = Some(ip);
+        } else if ip.is_ipv6() && first_v6.is_none() {
+            first_v6 = Some(ip);
+        }
+    }
+    match family {
+        IpFamily::Auto => first_v4.or(first_v6),
+        IpFamily::Ipv4 => first_v4,
+        IpFamily::Ipv6 => first_v6,
+    }
+}
+
+/// Resolves a host or literal IP string into an `IpAddr` constrained by `family`.
+pub async fn resolve_host_with_family(host: &str, family: IpFamily) -> Result<IpAddr, NetError> {
     let trimmed = host.trim();
     if trimmed.is_empty() {
         return Err(NetError::InvalidInput("Target host cannot be empty".into()));
     }
     if let Ok(ip) = trimmed.parse::<IpAddr>() {
+        return match (family, ip) {
+            (IpFamily::Auto, _) => Ok(ip),
+            (IpFamily::Ipv4, IpAddr::V4(_)) => Ok(ip),
+            (IpFamily::Ipv6, IpAddr::V6(_)) => Ok(ip),
+            (IpFamily::Ipv4, IpAddr::V6(_)) => Err(NetError::InvalidInput(format!(
+                "{trimmed} is an IPv6 address, but IPv4 mode is selected"
+            ))),
+            (IpFamily::Ipv6, IpAddr::V4(_)) => Err(NetError::InvalidInput(format!(
+                "{trimmed} is an IPv4 address, but IPv6 mode is selected"
+            ))),
+        };
+    }
+
+    // Try OS resolver first so /etc/hosts, macOS .local mDNS, and VPN split-DNS resolve normally.
+    if let Ok(Ok(addrs)) =
+        tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host((trimmed, 0))).await
+        && let Some(ip) = select_ip_for_family(addrs.map(|sa| sa.ip()), family)
+    {
         return Ok(ip);
     }
 
@@ -278,21 +316,43 @@ pub async fn resolve_host(host: &str) -> Result<IpAddr, NetError> {
         .build()
         .map_err(|e| NetError::Dns(e.to_string()))?;
 
-    let lookup = resolver
-        .lookup_ip(trimmed)
-        .await
-        .map_err(|e| NetError::Dns(format!("{trimmed}: {e}")))?;
-
-    let mut first_v6 = None;
-    for ip in lookup.iter() {
-        if ip.is_ipv4() {
-            return Ok(ip);
+    match family {
+        IpFamily::Auto => {
+            let lookup = resolver
+                .lookup_ip(trimmed)
+                .await
+                .map_err(|e| NetError::Dns(format!("{trimmed}: {e}")))?;
+            select_ip_for_family(lookup.iter(), IpFamily::Auto)
+                .ok_or_else(|| NetError::Dns(format!("No IP addresses found for {trimmed}")))
         }
-        if first_v6.is_none() {
-            first_v6 = Some(ip);
+        IpFamily::Ipv4 => {
+            let lookup = resolver
+                .ipv4_lookup(trimmed)
+                .await
+                .map_err(|e| NetError::Dns(format!("{trimmed} (A): {e}")))?;
+            select_ip_for_family(
+                lookup.answers().iter().filter_map(|r| r.data.ip_addr()),
+                IpFamily::Ipv4,
+            )
+            .ok_or_else(|| NetError::Dns(format!("No IPv4 (A) address found for {trimmed}")))
+        }
+        IpFamily::Ipv6 => {
+            let lookup = resolver
+                .ipv6_lookup(trimmed)
+                .await
+                .map_err(|e| NetError::Dns(format!("{trimmed} (AAAA): {e}")))?;
+            select_ip_for_family(
+                lookup.answers().iter().filter_map(|r| r.data.ip_addr()),
+                IpFamily::Ipv6,
+            )
+            .ok_or_else(|| NetError::Dns(format!("No IPv6 (AAAA) address found for {trimmed}")))
         }
     }
-    first_v6.ok_or_else(|| NetError::Dns(format!("No IP addresses found for {trimmed}")))
+}
+
+/// Resolves a host or literal IP string into an `IpAddr` (preferring IPv4 if both exist).
+pub async fn resolve_host(host: &str) -> Result<IpAddr, NetError> {
+    resolve_host_with_family(host, IpFamily::Auto).await
 }
 
 /// Best-effort reverse DNS lookup with short timeout.
@@ -571,6 +631,7 @@ pub struct PingConfig {
     pub interval: Duration,
     pub timeout: Duration,
     pub count: Option<usize>,
+    pub ip_family: IpFamily,
 }
 
 impl Default for PingConfig {
@@ -579,6 +640,7 @@ impl Default for PingConfig {
             interval: Duration::from_secs(1),
             timeout: Duration::from_secs(2),
             count: None,
+            ip_family: IpFamily::Auto,
         }
     }
 }
@@ -607,7 +669,7 @@ pub async fn run_ping(
     tx: mpsc::UnboundedSender<PingEvent>,
     cancel: CancelToken,
 ) {
-    let target_ip = match resolve_host(&target_host).await {
+    let target_ip = match resolve_host_with_family(&target_host, config.ip_family).await {
         Ok(ip) => ip,
         Err(e) => {
             let _ = tx.send(PingEvent::Error(e.to_string()));
@@ -741,10 +803,11 @@ pub async fn run_traceroute(
     target_host: String,
     max_hops: u8,
     probes_per_hop: usize,
+    ip_family: IpFamily,
     tx: mpsc::UnboundedSender<TracerouteEvent>,
     cancel: CancelToken,
 ) {
-    let target_ip = match resolve_host(&target_host).await {
+    let target_ip = match resolve_host_with_family(&target_host, ip_family).await {
         Ok(ip) => ip,
         Err(e) => {
             let _ = tx.send(TracerouteEvent::Error(e.to_string()));
@@ -975,10 +1038,11 @@ pub async fn run_mtr(
     target_host: String,
     max_hops: u8,
     interval: Duration,
+    ip_family: IpFamily,
     tx: mpsc::UnboundedSender<MtrEvent>,
     cancel: CancelToken,
 ) {
-    let target_ip = match resolve_host(&target_host).await {
+    let target_ip = match resolve_host_with_family(&target_host, ip_family).await {
         Ok(ip) => ip,
         Err(e) => {
             let _ = tx.send(MtrEvent::Error(e.to_string()));
@@ -1154,6 +1218,32 @@ mod tests {
                 orig_is_icmp_echo: true,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_host_with_family_enforces_literal_ip_family() {
+        let v4: IpAddr = "127.0.0.1".parse().unwrap();
+        let v6: IpAddr = "::1".parse().unwrap();
+
+        assert_eq!(
+            resolve_host_with_family("127.0.0.1", IpFamily::Auto).await.unwrap(),
+            v4
+        );
+        assert_eq!(
+            resolve_host_with_family("127.0.0.1", IpFamily::Ipv4).await.unwrap(),
+            v4
+        );
+        assert!(resolve_host_with_family("127.0.0.1", IpFamily::Ipv6).await.is_err());
+
+        assert_eq!(
+            resolve_host_with_family("::1", IpFamily::Auto).await.unwrap(),
+            v6
+        );
+        assert_eq!(
+            resolve_host_with_family("::1", IpFamily::Ipv6).await.unwrap(),
+            v6
+        );
+        assert!(resolve_host_with_family("::1", IpFamily::Ipv4).await.is_err());
     }
 
     #[tokio::test]

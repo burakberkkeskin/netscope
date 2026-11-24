@@ -3080,7 +3080,7 @@ dependencies = [
 
 [[package]]
 name = "netscope-app"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "chrono",
  "earcutr",
@@ -3100,7 +3100,7 @@ dependencies = [
 
 [[package]]
 name = "netscope-core"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "chrono",
  "hex",

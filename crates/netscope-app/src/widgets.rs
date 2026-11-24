@@ -1,5 +1,8 @@
-use egui::{Popup, Ui};
+use crate::theme::AppPalette;
+use egui::{Color32, CornerRadius, Frame, Margin, Popup, Stroke, Ui};
 use egui_plot::GridInput;
+use netscope_core::IpFamily;
+use std::net::IpAddr;
 
 pub enum HistoryPickAction {
     Selected(String),
@@ -60,4 +63,48 @@ pub fn nice_y_grid_spacer(input: GridInput) -> [f64; 3] {
         10.0
     } * pow10;
     [step, step * 0.5, step * 0.25]
+}
+
+/// Compact `[Auto | IPv4 | IPv6]` segmented protocol selector for probing tools.
+pub fn ip_family_selector(ui: &mut Ui, palette: &AppPalette, value: &mut IpFamily) -> bool {
+    let mut changed = false;
+    Frame::new()
+        .fill(palette.card_subtle_bg)
+        .stroke(Stroke::new(1.0, palette.card_border))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(Margin::same(2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for fam in [IpFamily::Auto, IpFamily::Ipv4, IpFamily::Ipv6] {
+                    let selected = *value == fam;
+                    let fill = if selected {
+                        palette.selected_bg
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+                    let fg = if selected {
+                        Color32::WHITE
+                    } else {
+                        palette.text_primary
+                    };
+                    let btn =
+                        egui::Button::new(egui::RichText::new(fam.label()).size(11.5).color(fg))
+                            .fill(fill)
+                            .frame(selected)
+                            .corner_radius(CornerRadius::same(4))
+                            .min_size(egui::vec2(34.0, 20.0));
+                    if ui.add(btn).clicked() && !selected {
+                        *value = fam;
+                        changed = true;
+                    }
+                }
+            });
+        });
+    changed
+}
+
+pub fn format_resolved_ip_pill(ip: IpAddr) -> String {
+    let tag = if ip.is_ipv6() { "IPv6" } else { "IPv4" };
+    format!("{tag} · {ip}")
 }
