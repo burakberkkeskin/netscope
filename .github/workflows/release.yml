@@ -73,7 +73,12 @@ jobs:
           ./scripts/bundle-macos.sh "$VER"
           mkdir -p artifacts
           ditto -c -k --sequesterRsrc --keepParent dist/NetScope.app "artifacts/NetScope-${TAG}-macos-arm64.zip"
-          hdiutil create -volname "NetScope" -srcfolder dist/NetScope.app -ov -format UDZO "artifacts/NetScope-${TAG}-macos-arm64.dmg"
+          rm -rf dmg-stage
+          mkdir -p dmg-stage
+          cp -R dist/NetScope.app dmg-stage/
+          ln -s /Applications dmg-stage/Applications
+          hdiutil create -volname "NetScope" -srcfolder dmg-stage -ov -format UDZO "artifacts/NetScope-${TAG}-macos-arm64.dmg"
+          rm -rf dmg-stage
 
       - name: Build & Package Linux (.tar.gz)
         if: runner.os == 'Linux'

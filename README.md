@@ -34,14 +34,54 @@ A cross-platform (**macOS**, **Linux**, **Windows**), pure-Rust native network d
 
 ---
 
-## Downloads
+## Installation
 
-Pre-built binaries for **macOS (Apple Silicon `.dmg` / `.app.zip`)**, **Linux (`x86_64 .tar.gz`)**, and **Windows (`x86_64 .zip`)** alongside `SHA256SUMS.txt` are published automatically on [GitHub Releases](https://github.com/burakberkkeskin/netscope/releases).
+Pre-built binaries are published on [GitHub Releases](https://github.com/burakberkkeskin/netscope/releases) with `SHA256SUMS.txt` checksums:
 
-> **macOS Gatekeeper Note:** Release binaries are currently unsigned (ad-hoc). If macOS warns on first launch, run:
-> ```bash
-> xattr -dr com.apple.quarantine /Applications/NetScope.app
-> ```
+- **macOS (Apple Silicon `arm64`, macOS 13+):** `NetScope-vX.Y.Z-macos-arm64.dmg` / `NetScope-vX.Y.Z-macos-arm64.zip`
+- **Linux (`x86_64`):** `NetScope-vX.Y.Z-linux-x86_64.tar.gz`
+- **Windows (`x86_64`):** `NetScope-vX.Y.Z-windows-x86_64.zip`
+
+Verify checksums after downloading:
+```bash
+# macOS
+shasum -a 256 -c SHA256SUMS.txt --ignore-missing
+
+# Linux
+sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
+### macOS (Apple Silicon)
+
+1. Open `NetScope-vX.Y.Z-macos-arm64.dmg` and drag `NetScope.app` onto `Applications` (do **not** launch directly from inside the read-only disk image). Alternatively, extract `NetScope-vX.Y.Z-macos-arm64.zip` and move `NetScope.app` to `/Applications`.
+2. **Why Gatekeeper may warn on first launch:** Release bundles are ad-hoc signed (`codesign -`) without a paid Apple Developer ID / notarization. Downloads made in a browser (Safari, Chrome, Brave, etc.) carry Apple's `com.apple.quarantine` extended attribute, which causes macOS to display **`"NetScope" is damaged and can't be opened`** (the app is not actually corrupted). Clear the quarantine flag once after copying it to `/Applications`:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/NetScope.app
+   open /Applications/NetScope.app
+   ```
+   > **Tip:** Downloading via CLI (`gh release download --repo burakberkkeskin/netscope --pattern '*macos-arm64*'` or `curl -LO <asset-url>`) avoids browser quarantine altogether.
+3. On first run, allow **Local Network** access when macOS prompts so **LAN Scanner**, router probes, and local gateway checks can operate.
+
+### Linux (`x86_64`)
+
+1. Extract the release archive and make the binary executable:
+   ```bash
+   tar -xzf NetScope-vX.Y.Z-linux-x86_64.tar.gz
+   chmod +x netscope
+   mkdir -p ~/.local/bin && mv netscope ~/.local/bin/netscope
+   ```
+2. Ensure desktop runtime libraries are installed (`libxkbcommon`, `libxcb`, `libwayland`, `libgl`, `libdbus`; see [Linux Prerequisites](#linux-prerequisites-ubuntu--debian) below for Debian/Ubuntu package names).
+3. **Unprivileged ICMP note:** Most modern distros allow non-root `SOCK_DGRAM` ICMP sockets by default. On hardened kernels where Ping/Traceroute/MTR fail with permission errors, inspect or widen `net.ipv4.ping_group_range`:
+   ```bash
+   sysctl net.ipv4.ping_group_range
+   sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
+   ```
+
+### Windows (`x86_64`)
+
+1. Extract `NetScope-vX.Y.Z-windows-x86_64.zip` to a local folder (for example `%LOCALAPPDATA%\Programs\NetScope`).
+2. Run `netscope.exe`.
+3. Because the Windows binary is not Authenticode-signed, **Windows Defender SmartScreen** may show *"Windows protected your PC"* on first launch — click **More info** and then **Run anyway**.
 
 ---
 
