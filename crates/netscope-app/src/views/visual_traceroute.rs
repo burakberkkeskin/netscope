@@ -500,51 +500,64 @@ pub fn render(
                             palette.subtle_card_frame()
                         };
                         let mut clicked_orig = false;
-                        row_frame
+                        let orig_resp = row_frame
                             .inner_margin(egui::Margin::symmetric(8, 6))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                let resp = ui
-                                    .horizontal(|ui| {
-                                        let (dot, _) =
-                                            ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-                                        ui.painter().circle_filled(dot.center(), 4.5, palette.accent);
+                                ui.style_mut().interaction.selectable_labels = false;
+                                ui.horizontal(|ui| {
+                                    let (dot, _) =
+                                        ui.allocate_exact_size(vec2(10.0, 10.0), Sense::empty());
+                                    ui.painter().circle_filled(dot.center(), 4.5, palette.accent);
 
-                                        ui.monospace(" 0");
-                                        ui.vertical(|ui| {
-                                            ui.style_mut().wrap_mode =
-                                                Some(egui::TextWrapMode::Truncate);
+                                    ui.monospace(" 0");
+                                    ui.vertical(|ui| {
+                                        ui.style_mut().wrap_mode =
+                                            Some(egui::TextWrapMode::Truncate);
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{} (This Mac)",
+                                                orig.short_place()
+                                            ))
+                                            .strong()
+                                            .size(12.5),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{}  •  0.0 ms",
+                                                orig.ip
+                                            ))
+                                            .size(11.0)
+                                            .color(palette.text_muted),
+                                        );
+                                        if let Some(isp) = orig.isp.as_deref() {
                                             ui.label(
-                                                egui::RichText::new(format!(
-                                                    "{} (This Mac)",
-                                                    orig.short_place()
-                                                ))
-                                                .strong()
-                                                .size(12.5),
+                                                egui::RichText::new(isp)
+                                                    .size(10.5)
+                                                    .color(palette.text_muted),
                                             );
-                                            ui.label(
-                                                egui::RichText::new(format!(
-                                                    "{}  •  0.0 ms",
-                                                    orig.ip
-                                                ))
-                                                .size(11.0)
-                                                .color(palette.text_muted),
-                                            );
-                                            if let Some(isp) = orig.isp.as_deref() {
-                                                ui.label(
-                                                    egui::RichText::new(isp)
-                                                        .size(10.5)
-                                                        .color(palette.text_muted),
-                                                );
-                                            }
-                                        });
-                                    })
-                                    .response
-                                    .interact(Sense::click());
-                                if resp.clicked() {
-                                    clicked_orig = true;
-                                }
+                                        }
+                                    });
+                                });
                             });
+                        let orig_click = ui
+                            .interact(
+                                orig_resp.response.rect,
+                                ui.scope_id().with(("vtrace_hop_card", 0u8)),
+                                Sense::click(),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if orig_click.hovered() && !is_sel {
+                            ui.painter().rect_stroke(
+                                orig_resp.response.rect,
+                                egui::CornerRadius::same(10),
+                                Stroke::new(1.5, palette.accent.linear_multiply(0.55)),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        if orig_click.clicked() {
+                            clicked_orig = true;
+                        }
                         if clicked_orig {
                             state.selected_hop = Some(0);
                             if let (Some(lat), Some(lon)) = (orig.lat, orig.lon) {
@@ -565,93 +578,106 @@ pub fn render(
                         };
 
                         let mut clicked_hop = None;
-                        row_frame
+                        let hop_resp = row_frame
                             .inner_margin(egui::Margin::symmetric(8, 6))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                let resp = ui
-                                    .horizontal(|ui| {
-                                        let dot_col = hop_rtt_color(
-                                            palette,
-                                            hop.trace.avg_ms,
-                                            hop.trace.ip.is_none(),
-                                        );
-                                        let (dot, _) =
-                                            ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-                                        ui.painter().circle_filled(dot.center(), 4.5, dot_col);
+                                ui.style_mut().interaction.selectable_labels = false;
+                                ui.horizontal(|ui| {
+                                    let dot_col = hop_rtt_color(
+                                        palette,
+                                        hop.trace.avg_ms,
+                                        hop.trace.ip.is_none(),
+                                    );
+                                    let (dot, _) =
+                                        ui.allocate_exact_size(vec2(10.0, 10.0), Sense::empty());
+                                    ui.painter().circle_filled(dot.center(), 4.5, dot_col);
 
-                                        ui.monospace(format!("{:>2}", hop.trace.hop));
-                                        ui.vertical(|ui| {
-                                            ui.style_mut().wrap_mode =
-                                                Some(egui::TextWrapMode::Truncate);
-                                            let title = match &hop.geo {
-                                                Some(g) => g.short_place(),
-                                                None => hop
-                                                    .trace
-                                                    .hostname
-                                                    .clone()
-                                                    .unwrap_or_else(|| {
-                                                        hop.trace
-                                                            .ip
-                                                            .map(|i| i.to_string())
-                                                            .unwrap_or_else(|| "* * *".into())
-                                                    }),
-                                            };
+                                    ui.monospace(format!("{:>2}", hop.trace.hop));
+                                    ui.vertical(|ui| {
+                                        ui.style_mut().wrap_mode =
+                                            Some(egui::TextWrapMode::Truncate);
+                                        let title = match &hop.geo {
+                                            Some(g) => g.short_place(),
+                                            None => hop
+                                                .trace
+                                                .hostname
+                                                .clone()
+                                                .unwrap_or_else(|| {
+                                                    hop.trace
+                                                        .ip
+                                                        .map(|i| i.to_string())
+                                                        .unwrap_or_else(|| "* * *".into())
+                                                }),
+                                        };
+                                        ui.label(
+                                            egui::RichText::new(title).strong().size(12.5),
+                                        );
+                                        let sub_ip = hop
+                                            .trace
+                                            .ip
+                                            .map(|i| i.to_string())
+                                            .unwrap_or_else(|| "No reply".into());
+                                        let rtt_str = hop
+                                            .trace
+                                            .avg_ms
+                                            .map(|m| format!("{m:.1} ms"))
+                                            .unwrap_or_else(|| "*".into());
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{sub_ip}  •  {rtt_str}"
+                                            ))
+                                            .size(11.0)
+                                            .color(palette.text_muted),
+                                        );
+                                        if let Some(isp) =
+                                            hop.geo.as_ref().and_then(|g| g.isp.as_deref())
+                                        {
                                             ui.label(
-                                                egui::RichText::new(title).strong().size(12.5),
+                                                egui::RichText::new(isp)
+                                                    .size(10.5)
+                                                    .color(palette.text_muted),
                                             );
-                                            let sub_ip = hop
-                                                .trace
-                                                .ip
-                                                .map(|i| i.to_string())
-                                                .unwrap_or_else(|| "No reply".into());
-                                            let rtt_str = hop
-                                                .trace
-                                                .avg_ms
-                                                .map(|m| format!("{m:.1} ms"))
-                                                .unwrap_or_else(|| "*".into());
+                                        }
+                                        if let Some(reg) = hop
+                                            .geo
+                                            .as_ref()
+                                            .and_then(|g| g.registry_place.as_deref())
+                                        {
                                             ui.label(
                                                 egui::RichText::new(format!(
-                                                    "{sub_ip}  •  {rtt_str}"
+                                                    "Anycast Edge • Registry HQ: {reg}"
                                                 ))
-                                                .size(11.0)
-                                                .color(palette.text_muted),
+                                                .size(10.0)
+                                                .color(palette.accent),
                                             );
-                                            if let Some(isp) =
-                                                hop.geo.as_ref().and_then(|g| g.isp.as_deref())
-                                            {
-                                                ui.label(
-                                                    egui::RichText::new(isp)
-                                                        .size(10.5)
-                                                        .color(palette.text_muted),
-                                                );
-                                            }
-                                            if let Some(reg) = hop
-                                                .geo
-                                                .as_ref()
-                                                .and_then(|g| g.registry_place.as_deref())
-                                            {
-                                                ui.label(
-                                                    egui::RichText::new(format!(
-                                                        "Anycast Edge • Registry HQ: {reg}"
-                                                    ))
-                                                    .size(10.0)
-                                                    .color(palette.accent),
-                                                );
-                                            }
-                                        });
-                                    })
-                                    .response
-                                    .interact(Sense::click());
-                                if resp.clicked() {
-                                    clicked_hop = Some(hop.trace.hop);
-                                    if let Some(ref g) = hop.geo
-                                        && let (Some(lat), Some(lon)) = (g.lat, g.lon)
-                                    {
-                                        pending_focus_geo = Some((lat, lon));
-                                    }
-                                }
+                                        }
+                                    });
+                                });
                             });
+                        let hop_click = ui
+                            .interact(
+                                hop_resp.response.rect,
+                                ui.scope_id().with(("vtrace_hop_card", hop.trace.hop)),
+                                Sense::click(),
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if hop_click.hovered() && !is_sel {
+                            ui.painter().rect_stroke(
+                                hop_resp.response.rect,
+                                egui::CornerRadius::same(10),
+                                Stroke::new(1.5, palette.accent.linear_multiply(0.55)),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        if hop_click.clicked() {
+                            clicked_hop = Some(hop.trace.hop);
+                            if let Some(ref g) = hop.geo
+                                && let (Some(lat), Some(lon)) = (g.lat, g.lon)
+                            {
+                                pending_focus_geo = Some((lat, lon));
+                            }
+                        }
                         if let Some(hnum) = clicked_hop {
                             state.selected_hop = Some(hnum);
                         }

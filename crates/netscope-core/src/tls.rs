@@ -205,7 +205,11 @@ pub async fn inspect_tls(
         .with_no_client_auth();
 
     let connector = TlsConnector::from(Arc::new(config));
-    let addr = format!("{trimmed_host}:{port}");
+    let addr = if trimmed_host.contains(':') && !trimmed_host.starts_with('[') {
+        format!("[{trimmed_host}]:{port}")
+    } else {
+        format!("{trimmed_host}:{port}")
+    };
     let stream = tokio::time::timeout(Duration::from_secs(8), TcpStream::connect(&addr))
         .await
         .map_err(|_| NetError::Timeout)?

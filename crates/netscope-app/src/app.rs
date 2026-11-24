@@ -298,6 +298,7 @@ impl eframe::App for NetScopeApp {
                         self.lan_scanner.stop();
                         self.port_scan.stop();
                         self.dns_propagation.stop();
+                        self.tls.stop();
                         ctx.send_viewport_cmd(ViewportCommand::Close);
                     }
                 }
@@ -1659,5 +1660,88 @@ mod ui_e2e_tests {
         let _ = click_at(&ctx, &mut app, jump_pos);
         assert_eq!(app.active_tool, ToolTab::Ipv6Diagnostics);
         app.ipv6_check.stop();
+    }
+
+    #[test]
+    fn e2e_ssl_certificate_chain_card_click_and_copy_feedback() {
+        use netscope_core::tls::{CertDetail, TlsInspectionResult, TrustDiagnosis};
+
+        let ctx = egui::Context::default();
+        let mut app = NetScopeApp::new_headless_for_test();
+        app.active_tool = ToolTab::SslCertificate;
+        app.tls.result = Some(TlsInspectionResult {
+            host: "example.com".into(),
+            port: 443,
+            sni: "example.com".into(),
+            protocol_version: "TLSv1_3".into(),
+            cipher_suite: "TLS13_AES_256_GCM_SHA384".into(),
+            diagnosis: TrustDiagnosis {
+                os_trusted: true,
+                custom_ca_trusted: None,
+                summary: "Certificate chain is valid and trusted by the OS trust store.".into(),
+                reasons: Vec::new(),
+            },
+            chain: vec![
+                CertDetail {
+                    position_label: "Leaf".into(),
+                    subject: "CN=example.com".into(),
+                    subject_cn: "example.com".into(),
+                    issuer: "CN=Example CA".into(),
+                    issuer_cn: "Example CA".into(),
+                    serial_hex: "01:02:03".into(),
+                    not_before: "2026-01-01 00:00 UTC".into(),
+                    not_after: "2027-01-01 00:00 UTC".into(),
+                    days_remaining: 90,
+                    is_expired: false,
+                    is_not_yet_valid: false,
+                    is_ca: false,
+                    sans: vec!["example.com".into()],
+                    key_algorithm: "ECDSA".into(),
+                    key_bits: 256,
+                    signature_algorithm: "ECDSA-SHA256".into(),
+                    sha256_fingerprint: "AA:BB:CC".into(),
+                    pem: "-----BEGIN CERTIFICATE-----\nLEAF\n-----END CERTIFICATE-----".into(),
+                },
+                CertDetail {
+                    position_label: "Intermediate #1".into(),
+                    subject: "CN=Example CA".into(),
+                    subject_cn: "Example CA".into(),
+                    issuer: "CN=Root CA".into(),
+                    issuer_cn: "Root CA".into(),
+                    serial_hex: "04:05:06".into(),
+                    not_before: "2024-01-01 00:00 UTC".into(),
+                    not_after: "2029-01-01 00:00 UTC".into(),
+                    days_remaining: 400,
+                    is_expired: false,
+                    is_not_yet_valid: false,
+                    is_ca: true,
+                    sans: Vec::new(),
+                    key_algorithm: "RSA".into(),
+                    key_bits: 4096,
+                    signature_algorithm: "RSA-SHA256".into(),
+                    sha256_fingerprint: "DD:EE:FF".into(),
+                    pem: "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----".into(),
+                },
+            ],
+        });
+
+        let out = run_frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.tls.selected_idx, 0);
+        // Click directly on the text inside card 1 (regression test for selectable_labels click-stealing bug).
+        let ca_pos = find_text_center(&out, "[Intermediate #1] Example CA")
+            .expect("Intermediate card label must be visible");
+        let out = click_at(&ctx, &mut app, ca_pos);
+        assert_eq!(
+            app.tls.selected_idx, 1,
+            "Clicking directly on certificate card text must select that card immediately"
+        );
+        assert!(has_rendered_text(&out, "DD:EE:FF"));
+
+        let copy_pos = find_text_center(&out, "Copy PEM").expect("Copy PEM button must be visible");
+        let out = click_at(&ctx, &mut app, copy_pos);
+        assert!(
+            has_rendered_text(&out, "Copied ✓"),
+            "Copy PEM button must show Copied confirmation"
+        );
     }
 }
