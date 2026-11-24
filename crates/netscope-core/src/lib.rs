@@ -1,4 +1,5 @@
 pub mod dns;
+pub mod dns_propagation;
 pub mod geoip;
 pub mod history;
 pub mod icmp;

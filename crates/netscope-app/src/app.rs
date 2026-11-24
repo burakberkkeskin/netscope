@@ -2,6 +2,7 @@ use crate::theme::{AppPalette, section_label, status_pill};
 use crate::tray::{TrayAction, TrayController};
 use crate::views;
 use crate::views::dns::DnsState;
+use crate::views::dns_propagation::DnsPropagationState;
 use crate::views::internet_check::InternetCheckState;
 use crate::views::iperf3::Iperf3State;
 use crate::views::lan_scanner::{LanJumpAction, LanScannerState};
@@ -41,6 +42,7 @@ pub enum ToolTab {
     PortScan,
     SubnetCalculator,
     DnsLookup,
+    DnsPropagation,
     SslCertificate,
 }
 
@@ -59,6 +61,7 @@ impl ToolTab {
             Self::PortScan => "Port Scan",
             Self::SubnetCalculator => "Subnet Calculator",
             Self::DnsLookup => "DNS Lookup",
+            Self::DnsPropagation => "DNS Propagation",
             Self::SslCertificate => "SSL Certificate",
         }
     }
@@ -92,6 +95,7 @@ pub struct NetScopeApp {
     port_scan: PortScanState,
     subnet_calc: SubnetCalcState,
     dns: DnsState,
+    dns_propagation: DnsPropagationState,
     tls: TlsState,
 
     screenshot_driver: Option<ScreenshotDriver>,
@@ -165,6 +169,7 @@ impl NetScopeApp {
             port_scan: PortScanState::default(),
             subnet_calc: SubnetCalcState::default(),
             dns: DnsState::default(),
+            dns_propagation: DnsPropagationState::default(),
             tls: TlsState::default(),
             screenshot_driver,
         };
@@ -230,6 +235,7 @@ impl eframe::App for NetScopeApp {
                         self.iperf3.stop();
                         self.lan_scanner.stop();
                         self.port_scan.stop();
+                        self.dns_propagation.stop();
                         ctx.send_viewport_cmd(ViewportCommand::Close);
                     }
                 }
@@ -259,6 +265,7 @@ impl eframe::App for NetScopeApp {
         self.lan_scanner.poll(&mut self.history, &self.rt, ctx);
         self.port_scan.poll();
         self.dns.poll();
+        self.dns_propagation.poll();
         self.tls.poll();
 
         self.drive_screenshots(ctx);
@@ -355,6 +362,12 @@ impl eframe::App for NetScopeApp {
                         section_label(ui, &palette, "DNS & DOMAINS");
                         ui.add_space(4.0);
                         self.nav_button(ui, &palette, ToolTab::DnsLookup, self.dns.running);
+                        self.nav_button(
+                            ui,
+                            &palette,
+                            ToolTab::DnsPropagation,
+                            self.dns_propagation.running,
+                        );
                         self.nav_button(ui, &palette, ToolTab::SslCertificate, self.tls.running);
                     });
 
@@ -471,15 +484,19 @@ impl eframe::App for NetScopeApp {
                                     self.subnet_calc = SubnetCalcState::default()
                                 }
                                 ToolTab::DnsLookup => self.dns.clear(),
+                                ToolTab::DnsPropagation => self.dns_propagation.clear(),
                                 ToolTab::SslCertificate => self.tls.clear(),
                             }
                         }
-                        if matches!(self.active_tool, ToolTab::LanScanner | ToolTab::PortScan)
-                            && ui.small_button("Copy Output").clicked()
+                        if matches!(
+                            self.active_tool,
+                            ToolTab::LanScanner | ToolTab::PortScan | ToolTab::DnsPropagation
+                        ) && ui.small_button("Copy Output").clicked()
                         {
                             let txt = match self.active_tool {
                                 ToolTab::LanScanner => self.lan_scanner.copy_text(),
                                 ToolTab::PortScan => self.port_scan.copy_text(),
+                                ToolTab::DnsPropagation => self.dns_propagation.copy_text(),
                                 _ => String::new(),
                             };
                             ui.ctx().copy_text(txt);
@@ -591,6 +608,13 @@ impl eframe::App for NetScopeApp {
                         &mut self.history,
                         &self.rt,
                     ),
+                    ToolTab::DnsPropagation => views::dns_propagation::render(
+                        ui,
+                        &palette,
+                        &mut self.dns_propagation,
+                        &mut self.history,
+                        &self.rt,
+                    ),
                     ToolTab::SslCertificate => views::tls::render(
                         ui,
                         &palette,
@@ -645,7 +669,7 @@ impl NetScopeApp {
             return;
         };
 
-        const STEPS: [(ToolTab, &str, bool); 14] = [
+        const STEPS: [(ToolTab, &str, bool); 15] = [
             (ToolTab::InternetCheck, "01-internet-check-light.png", false),
             (ToolTab::PathTroubleshoot, "02-path-troubleshoot.png", false),
             (ToolTab::VisualTraceroute, "03-visual-traceroute.png", false),
@@ -664,6 +688,7 @@ impl NetScopeApp {
             (ToolTab::LanScanner, "12-lan-scanner.png", false),
             (ToolTab::PortScan, "13-port-scan.png", false),
             (ToolTab::SubnetCalculator, "14-subnet-calculator.png", false),
+            (ToolTab::DnsPropagation, "15-dns-propagation.png", false),
         ];
 
         if driver.step >= STEPS.len() {
@@ -704,6 +729,7 @@ impl NetScopeApp {
                         self.port_scan.host = gw;
                         self.port_scan.start(&self.rt, ctx);
                     }
+                    14 => self.dns_propagation.start(&self.rt, ctx),
                     _ => {}
                 }
                 driver.phase = ShotPhase::WaitData;
@@ -726,6 +752,7 @@ impl NetScopeApp {
                     8 => !self.tls.running || elapsed >= Duration::from_secs(5),
                     11 => !self.lan_scanner.running || elapsed >= Duration::from_secs(12),
                     12 => !self.port_scan.running || elapsed >= Duration::from_secs(6),
+                    14 => !self.dns_propagation.running || elapsed >= Duration::from_secs(7),
                     _ => elapsed >= Duration::from_millis(250),
                 };
                 if ready {
@@ -735,6 +762,7 @@ impl NetScopeApp {
                         4 => self.mtr.stop(),
                         11 => self.lan_scanner.stop(),
                         12 => self.port_scan.stop(),
+                        14 => self.dns_propagation.stop(),
                         _ => {}
                     }
                     driver.phase = ShotPhase::SettleFrames(3);

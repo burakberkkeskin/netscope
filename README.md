@@ -8,7 +8,7 @@ A cross-platform (**macOS**, **Linux**, **Windows**), pure-Rust native network d
 
 ---
 
-## Features & Tools (13 Built-In Modules)
+## Features & Tools (14 Built-In Modules)
 
 ### Diagnostics
 - **Menu Bar / System Tray Monitor:** Keeps running after closing the main window; displays public IP, ASN/ISP, VPN interface status (`utun`, `wg`, `tailscale`, etc.), and DNS egress consistency (`DNS Matches` / `Upstream DNS` / `DNS Leak!`).
@@ -28,6 +28,7 @@ A cross-platform (**macOS**, **Linux**, **Windows**), pure-Rust native network d
 
 ### DNS & Domains
 - **DNS Lookup:** `dig`-style resolver queries (`A`, `AAAA`, `MX`, `TXT`, `NS`, `CNAME`, `SOA`, `CAA`, `SRV`, `PTR`) via `System`, Cloudflare (`1.1.1.1`), Google (`8.8.8.8`), Quad9 (`9.9.9.9`), or custom resolvers.
+- **DNS Propagation:** Concurrent multi-region propagation check across `System Default` and 13 global RFC 8484 DoH resolvers with normalized RRset consensus and optional expected-value cutover matching.
 - **SSL Certificate Inspector:** Full X.509 certificate chain viewer, SAN/key-usage inspection, OS trust-store diagnosis (`rustls-platform-verifier`), SNI override, and optional Custom CA PEM verification.
 
 ---
@@ -80,7 +81,7 @@ Roadmap plans and Architectural Decision Records (ADRs) live in [`plans/README.m
 - **Phase 1:** Foundation, Menu Bar Monitor, Internet Check, Ping, Traceroute, MTR, DNS Lookup, SSL Certificate Inspector — **Completed**
 - **Phase 2:** Visual Traceroute (Offline Vector Map, Deep Zoom, Hop 0 Origin, Anycast Edge PoP), Path Troubleshoot, 4-Stream Speed Test + Bufferbloat, Native Rust `iperf3` Wire Client, Persistent History — **Completed**
 - **Phase 3:** LAN Scanner + Network Guard, Port Scan + Banner Grabbing, IPv4/IPv6 Subnet Calculator + Splitter — **Completed**
-- **Phase 4 (`v0.4.0`):** Global DNS Propagation Checker — **Planned**
+- **Phase 4 (`v0.4.0`):** Global DNS Propagation Checker — **Completed**
 - **Phase 5 (`v0.5.0`):** Whois / RDAP & GeoIP Lookup — **Planned**
 - **Phase 6 (`v0.6.0`):** Email Security Check (`SPF`, `DKIM`, `DMARC`, `MX`) — **Planned**
 - **Phase 7 (`v0.7.0`):** Wi-Fi Analyzer & Channel Recommendation — **Planned**

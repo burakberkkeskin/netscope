@@ -1,4 +1,5 @@
 pub mod dns;
+pub mod dns_propagation;
 pub mod internet_check;
 pub mod iperf3;
 pub mod lan_scanner;
