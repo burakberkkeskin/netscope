@@ -245,6 +245,7 @@ pub fn render(
         ui.add_space(6.0);
         let max_h = ui.available_height().max(260.0);
         TableBuilder::new(ui)
+            .id_salt("path_troubleshoot_table")
             .striped(true)
             .resizable(true)
             .max_scroll_height(max_h)

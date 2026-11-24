@@ -301,6 +301,7 @@ pub fn render(
         } else {
             let table_h = ui.available_height().max(260.0);
             TableBuilder::new(ui)
+                .id_salt("port_scan_table")
                 .striped(true)
                 .max_scroll_height(table_h)
                 .column(Column::exact(75.0))

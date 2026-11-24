@@ -331,6 +331,30 @@ pub async fn fetch_public_network_status() -> PublicNetworkStatus {
         }
     }
 
+    // Prefer Cloudflare /meta for accurate self-origin city/region & seed GEO_CACHE for Hop 0
+    if let Some(cf_geo) = crate::geoip::fetch_self_geo_cloudflare().await {
+        crate::geoip::seed_cache(cf_geo.ip, cf_geo.clone()).await;
+        if let Some(pub_ip) = public_ip {
+            crate::geoip::seed_cache(pub_ip, cf_geo.clone()).await;
+        } else {
+            public_ip = Some(cf_geo.ip);
+        }
+        if isp_or_org.is_none() {
+            isp_or_org = match (cf_geo.asn, cf_geo.isp.clone()) {
+                (Some(asn), Some(isp)) => Some(format!("AS{asn} {isp}")),
+                (None, Some(isp)) => Some(isp),
+                (Some(asn), None) => Some(format!("AS{asn}")),
+                (None, None) => None,
+            };
+        }
+        if cf_geo.city.is_some() {
+            city = cf_geo.city;
+        }
+        if country.is_none() {
+            country = cf_geo.country_code.or(cf_geo.country);
+        }
+    }
+
     // Fallback ISP/Org/location enrichment via multi-provider GeoIP (also warms GEO_CACHE for Visual Traceroute Hop 0)
     if isp_or_org.is_none()
         && let Some(ip) = public_ip

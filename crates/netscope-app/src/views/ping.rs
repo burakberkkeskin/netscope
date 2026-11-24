@@ -1,8 +1,11 @@
 use crate::theme::{AppPalette, section_label, status_pill};
-use crate::widgets::{HistoryPickAction, host_history_picker};
+use crate::widgets::{HistoryPickAction, host_history_picker, nice_y_grid_spacer};
 use egui::Ui;
 use egui_extras::{Column, TableBuilder};
-use egui_plot::{Line, MarkerShape, Plot, PlotPoints, Points};
+use egui_plot::{
+    AxisHints, HLine, Legend, Line, LineStyle, MarkerShape, Plot, PlotPoints, Points,
+    uniform_grid_spacer,
+};
 use netscope_core::CancelToken;
 use netscope_core::history::PersistedState;
 use netscope_core::icmp::{PingConfig, PingEvent, PingSample, run_ping};
@@ -260,21 +263,43 @@ pub fn render(
             .map(|s| [s.seq as f64, 0.0])
             .collect();
 
-        Plot::new("ping_rtt_plot")
+        let y_axis = AxisHints::new_y().min_thickness(52.0).formatter(|mark, _range| {
+            let v = if mark.value.abs() < 0.05 { 0.0 } else { mark.value };
+            format!("{v:.1} ms")
+        });
+        let mut plot = Plot::new("ping_rtt_plot")
             .height(200.0)
-            .x_axis_formatter(|mark, _range| format!("#{}", mark.value.round() as i64))
-            .y_axis_formatter(|mark, _range| format!("{:.1} ms", mark.value))
-            .show(ui, |plot_ui| {
+            .show_background(false)
+            .legend(Legend::default())
+            .custom_y_axes(vec![y_axis])
+            .y_grid_spacer(uniform_grid_spacer(nice_y_grid_spacer))
+            .x_axis_formatter(|mark, _range| format!("#{}", mark.value.round() as i64));
+        if ok_pts.is_empty() && lost_pts.is_empty() {
+            plot = plot
+                .default_x_bounds(1.0, 10.0)
+                .default_y_bounds(0.0, 50.0);
+        }
+        plot.show(ui, |plot_ui| {
                 if !ok_pts.is_empty() {
                     plot_ui.line(
                         Line::new("RTT (ms)", PlotPoints::from(ok_pts.clone()))
                             .color(palette.accent)
-                            .width(2.0),
+                            .width(2.0)
+                            .fill(0.0)
+                            .fill_alpha(0.14),
                     );
                     plot_ui.points(
                         Points::new("Samples", PlotPoints::from(ok_pts))
                             .color(palette.accent)
                             .radius(3.0),
+                    );
+                }
+                if let Some(med) = state.stats.median_ms {
+                    plot_ui.hline(
+                        HLine::new("Median RTT", med)
+                            .color(palette.ok)
+                            .width(1.2)
+                            .style(LineStyle::dashed_dense()),
                     );
                 }
                 if !lost_pts.is_empty() {
@@ -296,6 +321,7 @@ pub fn render(
         ui.add_space(4.0);
         let row_count = state.samples.len();
         TableBuilder::new(ui)
+            .id_salt("ping_replies_table")
             .striped(true)
             .resizable(true)
             .max_scroll_height(210.0)

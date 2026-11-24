@@ -205,6 +205,7 @@ pub fn render(ui: &mut Ui, palette: &AppPalette, state: &mut SubnetCalcState) {
                     split_ipv4_subnet(v4.network, v4.prefix_len, state.split_target_prefix);
 
                 TableBuilder::new(ui)
+                    .id_salt("subnet_splitter_table")
                     .striped(true)
                     .max_scroll_height(220.0)
                     .column(Column::exact(45.0))

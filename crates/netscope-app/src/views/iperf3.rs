@@ -1,8 +1,8 @@
 use crate::theme::{AppPalette, section_label, status_pill};
-use crate::widgets::{HistoryPickAction, host_history_picker};
+use crate::widgets::{HistoryPickAction, host_history_picker, nice_y_grid_spacer};
 use egui::{Align, Layout, Ui};
 use egui_extras::{Column, TableBuilder};
-use egui_plot::{Line, Plot, PlotPoints};
+use egui_plot::{AxisHints, HLine, Legend, Line, LineStyle, Plot, PlotPoints, uniform_grid_spacer};
 use netscope_core::CancelToken;
 use netscope_core::history::{Iperf3Record, Iperf3ServerProfile, PersistedState};
 use netscope_core::iperf3::{
@@ -474,16 +474,42 @@ pub fn render(
                     .iter()
                     .map(|iv| [iv.second, iv.mbps])
                     .collect();
-                Plot::new("iperf3_plot")
+                let y_axis = AxisHints::new_y().min_thickness(44.0).formatter(|mark, _range| {
+                    let v = if mark.value.abs() < 0.5 { 0.0 } else { mark.value };
+                    format!("{v:.0}")
+                });
+                let mut plot = Plot::new("iperf3_plot")
                     .height(175.0)
-                    .x_axis_formatter(|mark, _range| format!("{:.0}s", mark.value))
-                    .y_axis_formatter(|mark, _range| format!("{:.0}", mark.value))
-                    .show(ui, |plot_ui| {
+                    .show_background(false)
+                    .legend(Legend::default())
+                    .include_y(0.0)
+                    .custom_y_axes(vec![y_axis])
+                    .y_grid_spacer(uniform_grid_spacer(nice_y_grid_spacer))
+                    .x_axis_formatter(|mark, _range| {
+                        let v = if mark.value.abs() < 0.5 { 0.0 } else { mark.value };
+                        format!("{v:.0}s")
+                    });
+                if pts.is_empty() {
+                    plot = plot
+                        .default_x_bounds(0.0, 10.0)
+                        .default_y_bounds(0.0, 100.0);
+                }
+                plot.show(ui, |plot_ui| {
                         if !pts.is_empty() {
                             plot_ui.line(
                                 Line::new("Throughput", PlotPoints::from(pts))
                                     .color(palette.accent)
-                                    .width(2.2),
+                                    .width(2.2)
+                                    .fill(0.0)
+                                    .fill_alpha(0.14),
+                            );
+                        }
+                        if let Some(ref s) = state.summary {
+                            plot_ui.hline(
+                                HLine::new("Average Mbps", s.avg_mbps)
+                                    .color(palette.ok)
+                                    .width(1.2)
+                                    .style(LineStyle::dashed_dense()),
                             );
                         }
                     });
@@ -503,6 +529,7 @@ pub fn render(
                     );
                 } else {
                     TableBuilder::new(ui)
+                        .id_salt("iperf3_history_table")
                         .striped(true)
                         .max_scroll_height(135.0)
                         .column(Column::exact(105.0))

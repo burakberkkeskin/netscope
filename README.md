@@ -11,7 +11,7 @@ A cross-platform (**macOS**, **Linux**, **Windows**), pure-Rust native network d
 ## Features & Tools (15 Built-In Modules)
 
 ### Diagnostics
-- **Menu Bar / System Tray Monitor:** Keeps running after closing the main window; displays public IP, ASN/ISP, VPN interface status (`utun`, `wg`, `tailscale`, etc.), and DNS egress consistency (`DNS Matches` / `Upstream DNS` / `DNS Leak!`).
+- **Menu Bar / System Tray Monitor:** Optional toggleable system tray icon (`Tray: On` / `Tray: Off` in the sidebar); when enabled, keeps running after closing the main window and displays public IP, ASN/ISP, VPN interface status (`utun`, `wg`, `tailscale`, etc.), and DNS egress consistency (`DNS Matches` / `Upstream DNS` / `DNS Leak!`). When disabled, closing the window quits cleanly.
 - **Internet Check:** 5-stage visual pipeline (`This Host -> Router -> Internet -> DNS -> Web`) pinpointing whether an outage is on your machine, local router, ISP link, DNS resolver, or HTTP stack—tolerating routers that drop ICMP echo when upstream connectivity works.
 - **IPv6 Diagnostics:** 6-stage IPv6 readiness suite (`Local Stack -> Router (NDP) -> ICMPv6 -> DNS v6 -> HTTPS v6 -> PMTUD`) inspecting GUA/SLAAC/ULA addressing, Router Advertisement flags (`M`/`O`/`A`/`L`) & lifetimes, scoped link-local gateway reachability, `AAAA` & IPv6 DoH transport, Dual-Stack parity (`IPv6` vs `IPv4`, Happy Eyeballs & PoP peering), NAT66 detection, and unprivileged 32 KB full-MSS PMTUD blackhole detection.
 - **Path Troubleshoot:** Hop-by-hop latency waterfall classifying segments (`LAN`, `CGNAT`, `ISP`, `Transit`, `Target`) and filtering mid-hop ICMP control-plane rate-limiting.
@@ -19,7 +19,7 @@ A cross-platform (**macOS**, **Linux**, **Windows**), pure-Rust native network d
 - **Traceroute:** Multi-probe hop discovery with parallel reverse DNS (`PTR`) resolution and RTT stats.
 - **Visual Traceroute:** Offline embedded Natural Earth 50m vector world map (with country borders, zero external tile servers) featuring 32x cursor-anchored zoom, quick regional focus, `Hop 0` public egress origin plotting, radial co-located hop separation, and **Anycast Edge PoP detection** (`CF-RAY` / `x-amz-cf-pop` / `x-served-by` IATA matching + fiber speed-of-light RTT validation).
 - **MTR:** Continuous hop statistics with a 40-round **Loss/Latency Heatmap** and automatic **Outage Log**.
-- **Speed Test:** 4-stream parallel HTTP/1.1 download/upload throughput test with concurrent loaded ping for **Bufferbloat Grading (`A+..F`)** and persistent run history.
+- **Speed Test:** 4-stream parallel HTTP/1.1 download/upload throughput test with a 4-step phase stepper, peak Mbps / jitter telemetry, area-filled throughput charts, persistent run history, and a detailed **Bufferbloat Analyzer (`A+..F`)** featuring idle/DL/UL latency breakdown, Loaded RTT timeline, per-workload readiness pills (Video Calls, Gaming, VoIP, Web), and SQM recommendations.
 - **iperf3 Client:** Built-in **zero-dependency pure-Rust ESnet `iperf3` v3.17 wire-protocol client**—no OS `iperf3` binary required on the client machine. Supports `-c`, `-p`, `-t`, `-P` (1–32 streams), `-R` (reverse download), `--bidir`, `-u` (UDP with `-b` bitrate pacing & RFC 1889 jitter/loss), `-O` (omit slow-start), `-l` (buffer size), `-N` (`TCP_NODELAY`), saved server profiles, and run history.
 
 ### Network Tools
@@ -28,7 +28,7 @@ A cross-platform (**macOS**, **Linux**, **Windows**), pure-Rust native network d
 - **Subnet Calculator:** Instant IPv4 & IPv6 CIDR calculator displaying netmask, wildcard mask, usable range, RFC scope, binary bitmask breakdown, and an interactive **Subnet Splitter**.
 
 ### DNS & Domains
-- **DNS Lookup:** `dig`-style resolver queries (`A`, `AAAA`, `MX`, `TXT`, `NS`, `CNAME`, `SOA`, `CAA`, `SRV`, `PTR`) via `System`, Cloudflare (`1.1.1.1`), Google (`8.8.8.8`), Quad9 (`9.9.9.9`), or custom resolvers.
+- **DNS Lookup:** `dig`-style resolver queries (`A`, `AAAA`, `MX`, `TXT`, `NS`, `CNAME`, `SOA`, `CAA`, `SRV`, `PTR`) with 1-click resolver pills (`System`, `1.1.1.1`, `8.8.8.8`, `9.9.9.9`, custom), KPI summary strip, Structured Table / Raw `dig` view toggle, click-to-copy values, and direct `Check Propagation ->` jump.
 - **DNS Propagation:** Concurrent multi-region propagation check across `System Default` and 13 global RFC 8484 DoH resolvers with normalized RRset consensus and optional expected-value cutover matching.
 - **SSL Certificate Inspector:** Full X.509 certificate chain viewer, SAN/key-usage inspection, OS trust-store diagnosis (`rustls-platform-verifier`), SNI override, and optional Custom CA PEM verification.
 
@@ -61,7 +61,7 @@ Install [NASM](https://www.nasm.us/) (`winget install NASM.NASM`) and ensure it 
 
 ### Build, Test & Package
 ```bash
-# Run unit & diagnostic tests (use `-- --skip live_` in firewalled/offline environments)
+# Run unit, diagnostic, and headless `egui::Context::run_ui` UI E2E tests (use `-- --skip live_` in firewalled/offline environments)
 cargo test --workspace
 
 # Strict Clippy check
@@ -84,10 +84,11 @@ Roadmap plans and Architectural Decision Records (ADRs) live in [`plans/README.m
 - **Phase 3:** LAN Scanner + Network Guard, Port Scan + Banner Grabbing, IPv4/IPv6 Subnet Calculator + Splitter — **Completed**
 - **Phase 4 (`v0.4.0`):** Global DNS Propagation Checker — **Completed**
 - **Phase 5 (`v0.5.0`):** IPv6 Diagnostics & Readiness Suite — **Completed**
-- **Phase 6 (`v0.6.0`):** Whois / RDAP & GeoIP Lookup — **Planned**
-- **Phase 7 (`v0.7.0`):** Email Security Check (`SPF`, `DKIM`, `DMARC`, `MX`) — **Planned**
-- **Phase 8 (`v0.8.0`):** Wi-Fi Analyzer & Channel Recommendation — **Planned**
-- **Phase 9 (`v0.9.0`):** Live Interface Monitor — **Planned**
+- **Phase 6 (`v0.6.0`):** Self-GeoIP Accuracy, Toggleable Menu Bar Tray, Speed Test / Bufferbloat / DNS / Chart UI/UX Overhaul & Deterministic UI E2E Tests — **Completed**
+- **Phase 7 (`v0.7.0`):** Whois / RDAP & GeoIP Lookup — **Planned**
+- **Phase 8 (`v0.8.0`):** Email Security Check (`SPF`, `DKIM`, `DMARC`, `MX`) — **Planned**
+- **Phase 9 (`v0.9.0`):** Wi-Fi Analyzer & Channel Recommendation — **Planned**
+- **Phase 10 (`v0.10.0`):** Live Interface Monitor — **Planned**
 
 ---
 

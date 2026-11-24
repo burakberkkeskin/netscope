@@ -22,9 +22,10 @@ Chronological roadmap, architectural decision records (ADRs), and task checklist
 | **03** | [`03-lan-discovery-and-port-scanner.md`](./03-lan-discovery-and-port-scanner.md) | LAN Scanner (ARP + PTR + OUI), Network Guard alerts, TCP/UDP Port Scan + banner/service detection, Subnet Calculator & Splitter | ✅ **Completed** |
 | **04 (`v0.4.0`)** | [`04-dns-propagation.md`](./04-dns-propagation.md) | Global DNS Propagation Checker (System + 13 RFC 8484 DoH resolvers, consensus & expected-value matching) | ✅ **Completed** |
 | **05 (`v0.5.0`)** | [`05-ipv6-diagnostics.md`](./05-ipv6-diagnostics.md) | IPv6 Diagnostics & Readiness (GUA/SLAAC/ULA/RA/DAD, 6-stage pipeline, PMTUD & blackhole test, Dual-Stack Happy Eyeballs) | ✅ **Completed** |
-| **06 (`v0.6.0`)** | `06-whois-rdap-geoip.md` | Whois / RDAP & GeoIP Lookup (IANA RDAP bootstrap + port-43 WHOIS fallback + GeoIP/ASN/PTR) | 📋 **Planned** |
-| **07 (`v0.7.0`)** | `07-email-security-check.md` | Email Security Check (`SPF` recursive lookup audit, `DKIM`, `DMARC`, `MX`) | 📋 **Planned** |
-| **08 (`v0.8.0`)** | `08-wifi-analyzer.md` | Wi-Fi Analyzer & Channel Recommendation (`CoreWLAN` / `nl80211` / WLAN API) | 📋 **Planned** |
-| **09 (`v0.9.0`)** | `09-live-interface-monitor.md` | Live Interface Monitor (real-time per-interface Rx/Tx throughput, packet/error stats) | 📋 **Planned** |
+| **06 (`v0.6.0`)** | [`06-ux-polish-tray-toggle-geoip-and-e2e.md`](./06-ux-polish-tray-toggle-geoip-and-e2e.md) | Self-GeoIP Accuracy, Toggleable Menu Bar Tray, Speed Test / Bufferbloat / DNS / Chart UI/UX Overhaul & Deterministic UI E2E Tests | ✅ **Completed** |
+| **07 (`v0.7.0`)** | `07-whois-rdap-geoip.md` | Whois / RDAP & GeoIP Lookup (IANA RDAP bootstrap + port-43 WHOIS fallback + GeoIP/ASN/PTR) | 📋 **Planned** |
+| **08 (`v0.8.0`)** | `08-email-security-check.md` | Email Security Check (`SPF` recursive lookup audit, `DKIM`, `DMARC`, `MX`) | 📋 **Planned** |
+| **09 (`v0.9.0`)** | `09-wifi-analyzer.md` | Wi-Fi Analyzer & Channel Recommendation (`CoreWLAN` / `nl80211` / WLAN API) | 📋 **Planned** |
+| **10 (`v0.10.0`)** | `10-live-interface-monitor.md` | Live Interface Monitor (real-time per-interface Rx/Tx throughput, packet/error stats) | 📋 **Planned** |
 
 > **Scope Notes:** `Background Uptime Monitor` and `Built-in Diagnostic Guides` were dropped as out-of-scope for an interactive desktop diagnostics utility (NetScope already embeds contextual diagnoses inline within each tool).

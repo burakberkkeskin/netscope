@@ -281,6 +281,85 @@ struct RipeLocationEntry {
     longitude: Option<f64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CfSpeedMetaResp {
+    #[serde(rename = "clientIp")]
+    pub client_ip: Option<String>,
+    pub asn: Option<u64>,
+    #[serde(rename = "asOrganization")]
+    pub as_organization: Option<String>,
+    pub country: Option<String>,
+    pub city: Option<String>,
+    pub region: Option<String>,
+    pub latitude: Option<serde_json::Value>,
+    pub longitude: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DbIpResp {
+    city: Option<String>,
+    #[serde(rename = "stateProv")]
+    state_prov: Option<String>,
+    #[serde(rename = "countryCode")]
+    country_code: Option<String>,
+    #[serde(rename = "countryName")]
+    country_name: Option<String>,
+}
+
+fn json_to_f64(val: Option<serde_json::Value>) -> Option<f64> {
+    match val? {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn clean_region_name(raw: Option<String>) -> Option<String> {
+    non_empty(raw).map(|r| {
+        r.strip_suffix(" Province")
+            .or_else(|| r.strip_suffix(" province"))
+            .unwrap_or(&r)
+            .trim()
+            .to_string()
+    })
+}
+
+/// Parses `https://speed.cloudflare.com/meta` into a `GeoLocation` for the local host's public egress.
+pub fn parse_cf_speed_meta(data: CfSpeedMetaResp) -> Option<GeoLocation> {
+    let ip: IpAddr = data.client_ip.as_deref()?.trim().parse().ok()?;
+    let (lat, lon) = valid_coords(json_to_f64(data.latitude), json_to_f64(data.longitude));
+    let city_raw = non_empty(data.city);
+    let region_clean = clean_region_name(data.region);
+
+    let combined_city = match (city_raw, region_clean) {
+        (Some(c), Some(r))
+            if !c.eq_ignore_ascii_case(&r)
+                && !c.to_ascii_lowercase().contains(&r.to_ascii_lowercase()) =>
+        {
+            Some(format!("{c}, {r}"))
+        }
+        (Some(c), _) => Some(c),
+        (None, Some(r)) => Some(r),
+        (None, None) => None,
+    };
+
+    Some(GeoLocation {
+        ip,
+        is_private: false,
+        is_anycast: false,
+        anycast_pop: None,
+        registry_place: None,
+        label: "Public IP".into(),
+        city: combined_city,
+        country: None,
+        country_code: non_empty(data.country),
+        isp: non_empty(data.as_organization),
+        asn: data.asn,
+        lat,
+        lon,
+    })
+}
+
 fn non_empty(s: Option<String>) -> Option<String> {
     s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
@@ -387,6 +466,37 @@ static GEO_CACHE: OnceLock<Arc<Mutex<HashMap<IpAddr, GeoLocation>>>> = OnceLock:
 
 fn cache() -> &'static Arc<Mutex<HashMap<IpAddr, GeoLocation>>> {
     GEO_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
+/// Inserts an externally verified `GeoLocation` (e.g. Cloudflare `/meta` self-origin) into the GeoIP cache.
+pub async fn seed_cache(ip: IpAddr, mut loc: GeoLocation) {
+    if loc.is_private || loc.lat.is_none() || loc.lon.is_none() {
+        return;
+    }
+    loc.ip = ip;
+    cache().lock().await.insert(ip, loc);
+}
+
+/// Queries Cloudflare's unblocked edge `/meta` endpoint for accurate self-geolocation (city/region/coords).
+pub async fn fetch_self_geo_cloudflare() -> Option<GeoLocation> {
+    crate::ensure_crypto_provider();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .user_agent("NetScope/0.6")
+        .build()
+        .ok()?;
+    let resp = client
+        .get("https://speed.cloudflare.com/meta")
+        .header("Referer", "https://speed.cloudflare.com/")
+        .header("Origin", "https://speed.cloudflare.com")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let data = resp.json::<CfSpeedMetaResp>().await.ok()?;
+    parse_cf_speed_meta(data)
 }
 
 /// Checks non-global / RFC1918 / CGNAT IP space locally so private hops never leave the host.
@@ -626,6 +736,32 @@ pub async fn lookup_ip(ip: IpAddr) -> GeoLocation {
         apply_anycast_pop(&mut loc, pop);
     }
 
+    // Provider 4 (city enrichment): db-ip free tier fills missing city when RIPEstat only gave country
+    if loc.city.is_none()
+        && !loc.is_anycast
+        && let Ok(resp) = client
+            .get(format!("https://api.db-ip.com/v2/free/{ip}"))
+            .send()
+            .await
+        && resp.status().is_success()
+        && let Ok(db) = resp.json::<DbIpResp>().await
+    {
+        let city = non_empty(db.city);
+        let state = clean_region_name(db.state_prov);
+        loc.city = match (city, state) {
+            (Some(c), Some(s)) if !c.eq_ignore_ascii_case(&s) => Some(format!("{c}, {s}")),
+            (Some(c), _) => Some(c),
+            (None, Some(s)) => Some(s),
+            (None, None) => None,
+        };
+        if loc.country_code.is_none() {
+            loc.country_code = non_empty(db.country_code);
+        }
+        if loc.country.is_none() {
+            loc.country = non_empty(db.country_name);
+        }
+    }
+
     if loc.lat.is_some() {
         cache().lock().await.insert(ip, loc.clone());
     }
@@ -823,5 +959,53 @@ mod tests {
         assert!(!loc.is_private);
         assert!(loc.lat.is_some() && loc.lon.is_some());
         assert!(loc.is_anycast);
+    }
+
+    #[test]
+    fn parses_cloudflare_speed_meta_location_and_strips_province_suffix() {
+        let json = r#"{
+            "clientIp": "198.51.100.42",
+            "asn": 64512,
+            "asOrganization": "Example ISP",
+            "country": "TR",
+            "city": "Ereğli",
+            "region": "Zonguldak Province",
+            "latitude": "41.28261",
+            "longitude": "31.41806"
+        }"#;
+        let parsed: CfSpeedMetaResp = serde_json::from_str(json).unwrap();
+        let loc = parse_cf_speed_meta(parsed).expect("valid meta should parse");
+        assert_eq!(loc.ip, "198.51.100.42".parse::<IpAddr>().unwrap());
+        assert_eq!(loc.city.as_deref(), Some("Ereğli, Zonguldak"));
+        assert_eq!(loc.country_code.as_deref(), Some("TR"));
+        assert_eq!(loc.asn, Some(64512));
+        assert_eq!(loc.isp.as_deref(), Some("Example ISP"));
+        assert_eq!(loc.lat, Some(41.28261));
+        assert_eq!(loc.lon, Some(31.41806));
+        assert_eq!(loc.short_place(), "Ereğli, Zonguldak, TR");
+    }
+
+    #[tokio::test]
+    async fn seed_cache_overrides_lookup_for_public_ip() {
+        let ip: IpAddr = "198.51.100.77".parse().unwrap();
+        let seeded = GeoLocation {
+            ip,
+            is_private: false,
+            is_anycast: false,
+            anycast_pop: None,
+            registry_place: None,
+            label: "Public IP".into(),
+            city: Some("Ereğli, Zonguldak".into()),
+            country: None,
+            country_code: Some("TR".into()),
+            isp: Some("Example ISP".into()),
+            asn: Some(64512),
+            lat: Some(41.28261),
+            lon: Some(31.41806),
+        };
+        seed_cache(ip, seeded).await;
+        let got = lookup_ip(ip).await;
+        assert_eq!(got.city.as_deref(), Some("Ereğli, Zonguldak"));
+        assert_eq!(got.lat, Some(41.28261));
     }
 }

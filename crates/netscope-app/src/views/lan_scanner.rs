@@ -392,6 +392,7 @@ pub fn render(
                     );
                 } else {
                     TableBuilder::new(ui)
+                        .id_salt("lan_scanner_table")
                         .striped(true)
                         .sense(Sense::click())
                         .max_scroll_height(avail_h - 68.0)

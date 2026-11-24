@@ -72,7 +72,11 @@ pub struct KnownLanDevice {
     pub last_seen: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedState {
     #[serde(default)]
     pub recent_hosts: Vec<String>,
@@ -88,6 +92,23 @@ pub struct PersistedState {
     pub iperf3_history: Vec<Iperf3Record>,
     #[serde(default)]
     pub known_lan_devices: Vec<KnownLanDevice>,
+    #[serde(default = "default_true")]
+    pub menu_bar_enabled: bool,
+}
+
+impl Default for PersistedState {
+    fn default() -> Self {
+        Self {
+            recent_hosts: Vec::new(),
+            recent_dns_queries: Vec::new(),
+            recent_tls_targets: Vec::new(),
+            iperf3_servers: Vec::new(),
+            speedtest_history: Vec::new(),
+            iperf3_history: Vec::new(),
+            known_lan_devices: Vec::new(),
+            menu_bar_enabled: true,
+        }
+    }
 }
 
 impl PersistedState {
@@ -306,7 +327,21 @@ mod tests {
         assert!(loaded.recent_hosts.contains(&"example.com".to_string()));
         assert_eq!(loaded.iperf3_servers.len(), 1);
         assert_eq!(loaded.iperf3_servers[0].name, "Homelab LAN");
+        assert!(loaded.menu_bar_enabled);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn menu_bar_enabled_defaults_true_for_legacy_json_and_persists_false() {
+        let legacy: PersistedState = serde_json::from_str("{}").unwrap();
+        assert!(legacy.menu_bar_enabled);
+
+        let mut disabled = PersistedState::default();
+        assert!(disabled.menu_bar_enabled);
+        disabled.menu_bar_enabled = false;
+        let json = serde_json::to_string(&disabled).unwrap();
+        let reloaded: PersistedState = serde_json::from_str(&json).unwrap();
+        assert!(!reloaded.menu_bar_enabled);
     }
 }

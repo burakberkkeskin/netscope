@@ -192,6 +192,7 @@ pub fn render(
         ui.add_space(6.0);
         let row_count = state.hops.len();
         TableBuilder::new(ui)
+            .id_salt("mtr_heatmap_table")
             .striped(true)
             .resizable(true)
             .max_scroll_height(310.0)

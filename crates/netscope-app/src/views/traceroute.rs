@@ -177,6 +177,7 @@ pub fn render(
         let row_count = state.hops.len();
         let max_h = ui.available_height().max(260.0);
         TableBuilder::new(ui)
+            .id_salt("traceroute_table")
             .striped(true)
             .resizable(true)
             .max_scroll_height(max_h)

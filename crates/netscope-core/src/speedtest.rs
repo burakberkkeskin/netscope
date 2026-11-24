@@ -98,9 +98,95 @@ pub struct SpeedTestResult {
     pub bufferbloat_grade: BufferbloatGrade,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorkloadQuality {
+    Smooth,
+    LagSpikes,
+    Poor,
+}
+
+impl WorkloadQuality {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Smooth => "Smooth",
+            Self::LagSpikes => "Lag Spikes",
+            Self::Poor => "Poor",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BufferbloatWorkloadSummary {
+    pub video_calls: WorkloadQuality,
+    pub gaming: WorkloadQuality,
+    pub voip: WorkloadQuality,
+    pub web_browsing: WorkloadQuality,
+    pub dl_bloat_ms: f64,
+    pub ul_bloat_ms: f64,
+    pub recommendation: String,
+}
+
+/// Evaluates real-time application quality and tuning advice from loaded vs idle latency inflation.
+pub fn evaluate_bufferbloat_workloads(res: &SpeedTestResult) -> BufferbloatWorkloadSummary {
+    let idle = res.unloaded_stats.median_ms.unwrap_or(0.0);
+    let dl_bloat_ms = (res.loaded_dl_stats.median_ms.unwrap_or(idle) - idle).max(0.0);
+    let ul_bloat_ms = (res.loaded_ul_stats.median_ms.unwrap_or(idle) - idle).max(0.0);
+    let worst = dl_bloat_ms.max(ul_bloat_ms);
+
+    let grade_app = |smooth_lim: f64, warn_lim: f64| -> WorkloadQuality {
+        if worst < smooth_lim {
+            WorkloadQuality::Smooth
+        } else if worst < warn_lim {
+            WorkloadQuality::LagSpikes
+        } else {
+            WorkloadQuality::Poor
+        }
+    };
+
+    let gaming = grade_app(15.0, 35.0);
+    let voip = grade_app(25.0, 60.0);
+    let video_calls = grade_app(35.0, 85.0);
+    let web_browsing = grade_app(75.0, 150.0);
+
+    let direction_hint = if ul_bloat_ms > dl_bloat_ms + 10.0 {
+        "Upload saturation causes the highest delay."
+    } else if dl_bloat_ms > ul_bloat_ms + 10.0 {
+        "Download saturation causes the highest delay."
+    } else {
+        "Both download and upload show similar queueing behavior."
+    };
+
+    let recommendation = match res.bufferbloat_grade {
+        BufferbloatGrade::APlus | BufferbloatGrade::A => {
+            format!("Queue latency stays tight under full saturation. {direction_hint}")
+        }
+        BufferbloatGrade::B | BufferbloatGrade::C => {
+            format!(
+                "{direction_hint} Enabling SQM (FQ-CoDel or CAKE) on your router will keep interactive traffic snappy."
+            )
+        }
+        BufferbloatGrade::D | BufferbloatGrade::F => {
+            format!(
+                "{direction_hint} Configure router SQM/CAKE traffic shaping (~90–95% of line rate) to eliminate lag spikes."
+            )
+        }
+    };
+
+    BufferbloatWorkloadSummary {
+        video_calls,
+        gaming,
+        voip,
+        web_browsing,
+        dl_bloat_ms,
+        ul_bloat_ms,
+        recommendation,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum SpeedTestEvent {
     PhaseChanged(SpeedTestPhase),
+    IdleSample(f64),
     DownloadSample(SpeedTestSample),
     UploadSample(SpeedTestSample),
     Completed(Box<SpeedTestResult>),
@@ -119,6 +205,9 @@ pub async fn run_speedtest(tx: mpsc::UnboundedSender<SpeedTestEvent>, cancel: Ca
             return;
         }
         let out = probe_once(ping_target, 64, seq, Duration::from_millis(900)).await;
+        if let Some(rtt) = out.rtt_ms() {
+            let _ = tx.send(SpeedTestEvent::IdleSample(rtt));
+        }
         idle_samples.push(out.rtt_ms());
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
@@ -313,5 +402,35 @@ mod tests {
         assert_eq!(grade_bufferbloat(14.0, 65.0), BufferbloatGrade::C);
         assert_eq!(grade_bufferbloat(14.0, 100.0), BufferbloatGrade::D);
         assert_eq!(grade_bufferbloat(14.0, 150.0), BufferbloatGrade::F);
+    }
+
+    #[test]
+    fn bufferbloat_workload_evaluation_grades_real_time_apps() {
+        let mk_res = |idle: f64, dl: f64, ul: f64| SpeedTestResult {
+            timestamp: Utc::now(),
+            download_mbps: 100.0,
+            upload_mbps: 50.0,
+            unloaded_stats: compute_latency_stats(&[Some(idle)]),
+            loaded_dl_stats: compute_latency_stats(&[Some(dl)]),
+            loaded_ul_stats: compute_latency_stats(&[Some(ul)]),
+            bufferbloat_grade: grade_bufferbloat(idle, dl.max(ul)),
+        };
+
+        let crisp = evaluate_bufferbloat_workloads(&mk_res(15.0, 18.0, 17.0));
+        assert_eq!(crisp.gaming, WorkloadQuality::Smooth);
+        assert_eq!(crisp.video_calls, WorkloadQuality::Smooth);
+        assert_eq!(crisp.voip, WorkloadQuality::Smooth);
+
+        let mid = evaluate_bufferbloat_workloads(&mk_res(15.0, 42.0, 65.0));
+        assert_eq!(mid.gaming, WorkloadQuality::Poor);
+        assert_eq!(mid.voip, WorkloadQuality::LagSpikes);
+        assert_eq!(mid.video_calls, WorkloadQuality::LagSpikes);
+        assert_eq!(mid.web_browsing, WorkloadQuality::Smooth);
+
+        let severe = evaluate_bufferbloat_workloads(&mk_res(15.0, 220.0, 180.0));
+        assert_eq!(severe.gaming, WorkloadQuality::Poor);
+        assert_eq!(severe.video_calls, WorkloadQuality::Poor);
+        assert_eq!(severe.web_browsing, WorkloadQuality::Poor);
+        assert!(severe.recommendation.contains("SQM"));
     }
 }
