@@ -384,8 +384,9 @@ impl NetScopeApp {
                     .auto_shrink([false, true])
                     .max_height(nav_max_h)
                     .show(ui, |ui| {
-                        section_label(ui, &palette, "HEALTH CHECKS");
-                        ui.add_space(3.0);
+                        ui.spacing_mut().item_spacing.y = 2.0;
+
+                        Self::nav_group_header(ui, &palette, "HEALTH CHECKS", true);
                         self.nav_button(
                             ui,
                             &palette,
@@ -405,9 +406,7 @@ impl NetScopeApp {
                             self.path_troubleshoot.running,
                         );
 
-                        ui.add_space(8.0);
-                        section_label(ui, &palette, "PATH & PROBES");
-                        ui.add_space(3.0);
+                        Self::nav_group_header(ui, &palette, "PATH & PROBES", false);
                         self.nav_button(ui, &palette, ToolTab::Ping, self.ping.running);
                         self.nav_button(
                             ui,
@@ -423,15 +422,11 @@ impl NetScopeApp {
                         );
                         self.nav_button(ui, &palette, ToolTab::Mtr, self.mtr.running);
 
-                        ui.add_space(8.0);
-                        section_label(ui, &palette, "BANDWIDTH");
-                        ui.add_space(3.0);
+                        Self::nav_group_header(ui, &palette, "BANDWIDTH", false);
                         self.nav_button(ui, &palette, ToolTab::SpeedTest, self.speedtest.running);
                         self.nav_button(ui, &palette, ToolTab::Iperf3, self.iperf3.running);
 
-                        ui.add_space(8.0);
-                        section_label(ui, &palette, "NETWORK TOOLS");
-                        ui.add_space(3.0);
+                        Self::nav_group_header(ui, &palette, "NETWORK TOOLS", false);
                         self.nav_button(
                             ui,
                             &palette,
@@ -441,9 +436,7 @@ impl NetScopeApp {
                         self.nav_button(ui, &palette, ToolTab::PortScan, self.port_scan.running);
                         self.nav_button(ui, &palette, ToolTab::SubnetCalculator, false);
 
-                        ui.add_space(8.0);
-                        section_label(ui, &palette, "DNS & DOMAINS");
-                        ui.add_space(3.0);
+                        Self::nav_group_header(ui, &palette, "DNS & DOMAINS", false);
                         self.nav_button(ui, &palette, ToolTab::DnsLookup, self.dns.running);
                         self.nav_button(
                             ui,
@@ -756,6 +749,45 @@ impl NetScopeApp {
             });
     }
 
+    fn nav_group_header(ui: &mut egui::Ui, palette: &AppPalette, title: &str, is_first: bool) {
+        if !is_first {
+            ui.add_space(6.0);
+        }
+        let (rect, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), egui::Sense::hover());
+        let pill_bg = if palette.dark {
+            egui::Color32::from_rgb(42, 45, 55)
+        } else {
+            egui::Color32::from_rgb(225, 229, 238)
+        };
+        let title_col = if palette.dark {
+            egui::Color32::from_rgb(218, 224, 236)
+        } else {
+            egui::Color32::from_rgb(38, 48, 64)
+        };
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(5), pill_bg);
+        let bar_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 5.0, rect.center().y - 5.0),
+            Vec2::new(3.0, 10.0),
+        );
+        ui.painter()
+            .rect_filled(bar_rect, CornerRadius::same(2), palette.accent);
+        let job = egui::text::LayoutJob::single_section(
+            title.to_string(),
+            egui::TextFormat {
+                font_id: egui::FontId::proportional(10.5),
+                color: title_col,
+                extra_letter_spacing: 0.7,
+                ..Default::default()
+            },
+        );
+        let galley = ui.painter().layout_job(job);
+        let text_pos = egui::pos2(rect.left() + 13.0, rect.center().y - galley.size().y * 0.5);
+        ui.painter().galley(text_pos, galley, title_col);
+        ui.add_space(2.0);
+    }
+
     fn nav_button(
         &mut self,
         ui: &mut egui::Ui,
@@ -763,31 +795,49 @@ impl NetScopeApp {
         tab: ToolTab,
         active_task: bool,
     ) {
+        let (rect, resp) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), egui::Sense::click());
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
         let selected = self.active_tool == tab;
         let fill = if selected {
             palette.selected_bg
+        } else if resp.hovered() {
+            if palette.dark {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 16)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(15, 23, 42, 14)
+            }
         } else {
             egui::Color32::TRANSPARENT
         };
+        if fill != egui::Color32::TRANSPARENT {
+            ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
+        }
+
         let fg = if selected {
             egui::Color32::WHITE
         } else {
             palette.text_primary
         };
+        let galley = ui.painter().layout_no_wrap(
+            tab.title().to_string(),
+            egui::FontId::proportional(13.0),
+            fg,
+        );
+        let text_pos = egui::pos2(rect.left() + 14.0, rect.center().y - galley.size().y * 0.5);
+        ui.painter().galley(text_pos, galley, fg);
 
-        let label = if active_task {
-            format!("{}  •", tab.title())
-        } else {
-            tab.title().to_string()
-        };
+        if active_task {
+            let dot_col = if selected {
+                egui::Color32::WHITE
+            } else {
+                palette.ok
+            };
+            ui.painter()
+                .circle_filled(egui::pos2(rect.right() - 10.0, rect.center().y), 3.5, dot_col);
+        }
 
-        let btn = egui::Button::new(egui::RichText::new(label).size(13.0).color(fg))
-            .fill(fill)
-            .frame(selected)
-            .corner_radius(CornerRadius::same(7))
-            .min_size(Vec2::new(ui.available_width(), 25.0));
-
-        if ui.add(btn).clicked() {
+        if resp.clicked() {
             self.active_tool = tab;
         }
     }

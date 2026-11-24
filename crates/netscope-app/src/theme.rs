@@ -91,11 +91,17 @@ pub fn status_pill(ui: &mut Ui, text: &str, fg: Color32, bg: Color32) {
 }
 
 pub fn section_label(ui: &mut Ui, palette: &AppPalette, text: &str) {
+    let col = if palette.dark {
+        Color32::from_rgb(176, 184, 198)
+    } else {
+        Color32::from_rgb(71, 82, 98)
+    };
     ui.label(
         egui::RichText::new(text)
             .size(11.0)
             .strong()
-            .color(palette.text_muted),
+            .extra_letter_spacing(0.6)
+            .color(col),
     );
 }
 
