@@ -551,11 +551,8 @@ pub fn collect_local_ipv6_inventory() -> Result<LocalIpv6Inventory, NetError> {
         });
     };
 
-    let mut link_mtu = iface.mtu;
-    let mut nd6_options = None;
-    let mut os_addr_flags: HashMap<Ipv6Addr, OsIpv6AddrFlags> = HashMap::new();
     let mut ra_router = RaRouterInfo::default();
-    let mut ra_prefixes = Vec::new();
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(unused_mut))]
     let mut ipv6_dns_servers: Vec<Ipv6Addr> = iface
         .dns_servers
         .iter()
@@ -573,7 +570,11 @@ pub fn collect_local_ipv6_inventory() -> Result<LocalIpv6Inventory, NetError> {
     }
 
     #[cfg(target_os = "macos")]
-    {
+    let (link_mtu, nd6_options, os_addr_flags, ra_prefixes) = {
+        let mut link_mtu = iface.mtu;
+        let mut nd6_options = None;
+        let mut os_addr_flags: HashMap<Ipv6Addr, OsIpv6AddrFlags> = HashMap::new();
+        let mut ra_prefixes = Vec::new();
         if let Ok(out) = std::process::Command::new("/sbin/ifconfig")
             .arg(&iface.name)
             .output()
@@ -606,7 +607,16 @@ pub fn collect_local_ipv6_inventory() -> Result<LocalIpv6Inventory, NetError> {
         {
             ipv6_dns_servers = parse_macos_scutil_ipv6_dns(&String::from_utf8_lossy(&out.stdout));
         }
-    }
+        (link_mtu, nd6_options, os_addr_flags, ra_prefixes)
+    };
+
+    #[cfg(not(target_os = "macos"))]
+    let (link_mtu, nd6_options, os_addr_flags, ra_prefixes): (
+        Option<u32>,
+        Option<String>,
+        HashMap<Ipv6Addr, OsIpv6AddrFlags>,
+        Vec<RaPrefixInfo>,
+    ) = (iface.mtu, None, HashMap::new(), Vec::new());
 
     #[cfg(target_os = "linux")]
     {
