@@ -52,7 +52,7 @@ impl ToolTab {
     pub fn title(self) -> &'static str {
         match self {
             Self::InternetCheck => "Internet Check",
-            Self::Ipv6Diagnostics => "IPv6 Diagnostics",
+            Self::Ipv6Diagnostics => "IPv6 Check",
             Self::PathTroubleshoot => "Path Troubleshoot",
             Self::Ping => "Ping",
             Self::Traceroute => "Traceroute",
@@ -384,8 +384,8 @@ impl NetScopeApp {
                     .auto_shrink([false, true])
                     .max_height(nav_max_h)
                     .show(ui, |ui| {
-                        section_label(ui, &palette, "DIAGNOSTICS");
-                        ui.add_space(4.0);
+                        section_label(ui, &palette, "HEALTH CHECKS");
+                        ui.add_space(3.0);
                         self.nav_button(
                             ui,
                             &palette,
@@ -404,6 +404,10 @@ impl NetScopeApp {
                             ToolTab::PathTroubleshoot,
                             self.path_troubleshoot.running,
                         );
+
+                        ui.add_space(8.0);
+                        section_label(ui, &palette, "PATH & PROBES");
+                        ui.add_space(3.0);
                         self.nav_button(ui, &palette, ToolTab::Ping, self.ping.running);
                         self.nav_button(
                             ui,
@@ -418,12 +422,16 @@ impl NetScopeApp {
                             self.visual_traceroute.running,
                         );
                         self.nav_button(ui, &palette, ToolTab::Mtr, self.mtr.running);
+
+                        ui.add_space(8.0);
+                        section_label(ui, &palette, "BANDWIDTH");
+                        ui.add_space(3.0);
                         self.nav_button(ui, &palette, ToolTab::SpeedTest, self.speedtest.running);
                         self.nav_button(ui, &palette, ToolTab::Iperf3, self.iperf3.running);
 
-                        ui.add_space(10.0);
+                        ui.add_space(8.0);
                         section_label(ui, &palette, "NETWORK TOOLS");
-                        ui.add_space(4.0);
+                        ui.add_space(3.0);
                         self.nav_button(
                             ui,
                             &palette,
@@ -433,9 +441,9 @@ impl NetScopeApp {
                         self.nav_button(ui, &palette, ToolTab::PortScan, self.port_scan.running);
                         self.nav_button(ui, &palette, ToolTab::SubnetCalculator, false);
 
-                        ui.add_space(10.0);
+                        ui.add_space(8.0);
                         section_label(ui, &palette, "DNS & DOMAINS");
-                        ui.add_space(4.0);
+                        ui.add_space(3.0);
                         self.nav_button(ui, &palette, ToolTab::DnsLookup, self.dns.running);
                         self.nav_button(
                             ui,
@@ -777,7 +785,7 @@ impl NetScopeApp {
             .fill(fill)
             .frame(selected)
             .corner_radius(CornerRadius::same(7))
-            .min_size(Vec2::new(ui.available_width(), 27.0));
+            .min_size(Vec2::new(ui.available_width(), 25.0));
 
         if ui.add(btn).clicked() {
             self.active_tool = tab;
@@ -1122,6 +1130,12 @@ mod ui_e2e_tests {
         let mut app = NetScopeApp::new_headless_for_test();
         let out = run_frame(&ctx, &mut app, Vec::new());
 
+        assert!(has_rendered_text(&out, "HEALTH CHECKS"));
+        assert!(has_rendered_text(&out, "PATH & PROBES"));
+        assert!(has_rendered_text(&out, "BANDWIDTH"));
+        assert!(has_rendered_text(&out, "NETWORK TOOLS"));
+        assert!(has_rendered_text(&out, "DNS & DOMAINS"));
+
         let dark_pos = find_text_center(&out, "Dark").expect("Dark button must be visible");
         let out = click_at(&ctx, &mut app, dark_pos);
         assert!(app.dark_mode, "clicking Dark button must enable dark_mode");
@@ -1132,8 +1146,8 @@ mod ui_e2e_tests {
         let out = click_at(&ctx, &mut app, dns_pos);
         assert_eq!(app.active_tool, ToolTab::DnsLookup);
 
-        let v6_pos = find_text_center(&out, "IPv6 Diagnostics")
-            .expect("IPv6 Diagnostics nav item must be visible");
+        let v6_pos = find_text_center(&out, "IPv6 Check")
+            .expect("IPv6 Check nav item must be visible");
         let _ = click_at(&ctx, &mut app, v6_pos);
         assert_eq!(app.active_tool, ToolTab::Ipv6Diagnostics);
     }
