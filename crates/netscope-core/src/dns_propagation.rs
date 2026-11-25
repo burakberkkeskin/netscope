@@ -487,7 +487,19 @@ async fn query_system_resolver(
                 fallback
             };
 
-            if selected.is_empty() {
+            if lookup_res.status == crate::dns::DnsLookupStatus::NxDomain {
+                ResolverResult {
+                    index,
+                    resolver_name: node.name.into(),
+                    region: node.region.into(),
+                    endpoint_hint: node.endpoint_hint.into(),
+                    outcome: PropagationOutcome::NxDomain,
+                    latency_ms: lookup_res.query_time_ms.max(elapsed_ms),
+                    min_ttl: None,
+                    answers: Vec::new(),
+                    normalized_key: String::new(),
+                }
+            } else if selected.is_empty() {
                 ResolverResult {
                     index,
                     resolver_name: node.name.into(),

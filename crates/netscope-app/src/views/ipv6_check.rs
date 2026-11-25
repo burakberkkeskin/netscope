@@ -10,9 +10,17 @@ use netscope_core::ipv6_check::{
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SlaacViewMode {
+    #[default]
+    Formatted,
+    Raw,
+}
+
 #[derive(Default)]
 pub struct Ipv6CheckState {
     pub running: bool,
+    pub slaac_view: SlaacViewMode,
     pub current: Option<Ipv6CheckReport>,
     cancel: Option<CancelToken>,
     rx: Option<mpsc::UnboundedReceiver<Ipv6CheckEvent>>,
@@ -462,7 +470,12 @@ pub fn render(ui: &mut Ui, palette: &AppPalette, state: &mut Ipv6CheckState, rt:
 
             ui.add_space(12.0);
 
-            // 3. Core IPv6 Readiness Checklist Table
+            // 3. SLAAC & Router Advertisement (RA) Inspector (Formatted | Raw toggle)
+            render_slaac_inspector(ui, palette, &report, &mut state.slaac_view);
+
+            ui.add_space(12.0);
+
+            // 4. Core IPv6 Readiness Checklist Table
             palette.card_frame().show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 section_label(ui, palette, "CORE IPv6 READINESS CHECKLIST");
@@ -522,6 +535,285 @@ pub fn render(ui: &mut Ui, palette: &AppPalette, state: &mut Ipv6CheckState, rt:
                     });
             });
         });
+}
+
+fn render_slaac_inspector(
+    ui: &mut Ui,
+    palette: &AppPalette,
+    report: &Ipv6CheckReport,
+    view_mode: &mut SlaacViewMode,
+) {
+    palette.card_frame().show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.horizontal(|ui| {
+            section_label(ui, palette, "SLAAC & ROUTER ADVERTISEMENT (RA) INSPECTOR");
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if !report.inventory.raw_slaac_dump.is_empty()
+                    && ui.small_button("Copy Raw").clicked()
+                {
+                    ui.ctx().copy_text(report.inventory.raw_slaac_dump.clone());
+                }
+                if ui
+                    .selectable_label(*view_mode == SlaacViewMode::Raw, "Raw")
+                    .clicked()
+                {
+                    *view_mode = SlaacViewMode::Raw;
+                }
+                if ui
+                    .selectable_label(*view_mode == SlaacViewMode::Formatted, "Formatted")
+                    .clicked()
+                {
+                    *view_mode = SlaacViewMode::Formatted;
+                }
+            });
+        });
+
+        ui.add_space(8.0);
+
+        match *view_mode {
+            SlaacViewMode::Formatted => {
+                let ra = &report.inventory.ra_router;
+                let r_if = &report.inventory.ra_interface;
+
+                // Compact 4-column RA Parameter strip
+                ui.columns(4, |cols| {
+                    slaac_param_card(
+                        &mut cols[0],
+                        palette,
+                        "Advertising Router",
+                        ra.gateway_display.as_deref().unwrap_or("None"),
+                        &format!(
+                            "Pref: {} · Expire: {}",
+                            ra.preference.as_deref().unwrap_or("—"),
+                            ra.expire.as_deref().unwrap_or("—")
+                        ),
+                    );
+                    slaac_param_card(
+                        &mut cols[1],
+                        palette,
+                        "RA Flags & Hop Limit",
+                        &format!(
+                            "M={}  O={}  HopLimit={}",
+                            u8::from(ra.managed_m),
+                            u8::from(ra.other_o),
+                            r_if.cur_hop_limit
+                                .map(|h| h.to_string())
+                                .unwrap_or_else(|| "—".into())
+                        ),
+                        &ra.provisioning_summary,
+                    );
+                    let ra_mtu_txt = r_if
+                        .ra_link_mtu
+                        .map(|m| format!("{m} B"))
+                        .unwrap_or_else(|| "Not advertised".into());
+                    let nic_mtu_txt = report
+                        .inventory
+                        .link_mtu
+                        .map(|m| format!("NIC L2 MTU: {m} B"))
+                        .unwrap_or_else(|| "NIC MTU unknown".into());
+                    slaac_param_card(
+                        &mut cols[2],
+                        palette,
+                        "RA AdvLinkMTU",
+                        &ra_mtu_txt,
+                        &nic_mtu_txt,
+                    );
+                    let timers_val = match (&r_if.reachable, &r_if.retrans) {
+                        (Some(r), Some(rt)) => format!("Reach {r} · Retrans {rt}"),
+                        (Some(r), None) => format!("Reach {r}"),
+                        _ => "—".into(),
+                    };
+                    let base_sub = r_if
+                        .base_reachable
+                        .as_deref()
+                        .map(|b| format!("BaseReachable: {b}"))
+                        .or_else(|| r_if.nd6_flags.clone())
+                        .unwrap_or_else(|| "NDP kernel defaults".into());
+                    slaac_param_card(&mut cols[3], palette, "NDP Timers", &timers_val, &base_sub);
+                });
+
+                ui.add_space(8.0);
+
+                if report.inventory.ra_prefixes.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No SLAAC Router Advertisement prefixes cached on this interface.")
+                            .size(12.0)
+                            .color(palette.text_muted),
+                    );
+                } else {
+                    TableBuilder::new(ui)
+                        .id_salt("ipv6_slaac_prefixes_table")
+                        .striped(true)
+                        .max_scroll_height(140.0)
+                        .column(Column::exact(225.0))
+                        .column(Column::exact(105.0))
+                        .column(Column::exact(105.0))
+                        .column(Column::exact(110.0))
+                        .column(Column::exact(105.0))
+                        .column(Column::remainder())
+                        .header(22.0, |mut h| {
+                            h.col(|ui| {
+                                ui.strong("Advertised Prefix");
+                            });
+                            h.col(|ui| {
+                                ui.strong("Flags");
+                            });
+                            h.col(|ui| {
+                                ui.strong("Valid (vltime)");
+                            });
+                            h.col(|ui| {
+                                ui.strong("Preferred (pltime)");
+                            });
+                            h.col(|ui| {
+                                ui.strong("Remaining");
+                            });
+                            h.col(|ui| {
+                                ui.strong("Router");
+                            });
+                        })
+                        .body(|body| {
+                            body.rows(24.0, report.inventory.ra_prefixes.len(), |mut row| {
+                                let pfx = &report.inventory.ra_prefixes[row.index()];
+                                row.col(|ui| {
+                                    let is_ula = pfx.prefix.starts_with("fd")
+                                        || pfx.prefix.starts_with("fc");
+                                    ui.horizontal(|ui| {
+                                        status_pill(
+                                            ui,
+                                            if is_ula { "ULA" } else { "GUA" },
+                                            if is_ula { palette.accent } else { palette.ok },
+                                            if is_ula {
+                                                palette.card_subtle_bg
+                                            } else {
+                                                palette.ok_bg
+                                            },
+                                        );
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(&pfx.prefix)
+                                                    .size(11.5)
+                                                    .monospace(),
+                                            )
+                                            .truncate(),
+                                        )
+                                        .on_hover_text(&pfx.prefix);
+                                    });
+                                });
+                                row.col(|ui| {
+                                    ui.horizontal(|ui| {
+                                        if pfx.autonomous {
+                                            status_pill(ui, "A", palette.ok, palette.ok_bg);
+                                        }
+                                        if pfx.on_link {
+                                            status_pill(
+                                                ui,
+                                                "L",
+                                                palette.accent,
+                                                palette.card_subtle_bg,
+                                            );
+                                        }
+                                    });
+                                });
+                                row.col(|ui| {
+                                    ui.monospace(
+                                        pfx.valid_lft
+                                            .as_deref()
+                                            .map(|v| format!("{v}s"))
+                                            .unwrap_or_else(|| "—".into()),
+                                    );
+                                });
+                                row.col(|ui| {
+                                    ui.monospace(
+                                        pfx.preferred_lft
+                                            .as_deref()
+                                            .map(|v| format!("{v}s"))
+                                            .unwrap_or_else(|| "—".into()),
+                                    );
+                                });
+                                row.col(|ui| {
+                                    ui.monospace(pfx.expire.as_deref().unwrap_or("—"));
+                                });
+                                row.col(|ui| {
+                                    let rtr = pfx.router.as_deref().unwrap_or("—");
+                                    let txt = if pfx.router_reachable {
+                                        format!("{rtr} (reachable)")
+                                    } else {
+                                        rtr.to_string()
+                                    };
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&txt)
+                                                .size(11.5)
+                                                .monospace()
+                                                .color(palette.text_muted),
+                                        )
+                                        .truncate(),
+                                    )
+                                    .on_hover_text(&txt);
+                                });
+                            });
+                        });
+                }
+            }
+            SlaacViewMode::Raw => {
+                let mut raw = if report.inventory.raw_slaac_dump.is_empty() {
+                    "; (no raw OS Router Advertisement / NDP output available on this platform)"
+                        .to_string()
+                } else {
+                    report.inventory.raw_slaac_dump.clone()
+                };
+                egui::ScrollArea::vertical()
+                    .id_salt("ipv6_raw_slaac_scroll")
+                    .max_height(210.0)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut raw)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(10),
+                        );
+                    });
+            }
+        }
+    });
+}
+
+fn slaac_param_card(
+    ui: &mut Ui,
+    palette: &AppPalette,
+    title: &str,
+    value: &str,
+    subtitle: &str,
+) {
+    palette.subtle_card_frame().show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.set_min_height(46.0);
+        ui.label(
+            egui::RichText::new(title)
+                .size(10.8)
+                .color(palette.text_muted),
+        );
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(value)
+                    .size(12.5)
+                    .strong()
+                    .monospace()
+                    .color(palette.text_primary),
+            )
+            .truncate(),
+        )
+        .on_hover_text(value);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(subtitle)
+                    .size(10.8)
+                    .color(palette.text_muted),
+            )
+            .truncate(),
+        )
+        .on_hover_text(subtitle);
+    });
 }
 
 fn detail_kv_row(ui: &mut Ui, palette: &AppPalette, key: &str, val: &str) {
@@ -605,7 +897,7 @@ fn paint_mtu_bar(ui: &mut Ui, palette: &AppPalette, mtu: &MtuReport) {
     let link_val = mtu.link_mtu.unwrap_or(1500);
     let path_val = mtu.path_mtu;
 
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(
             egui::RichText::new(format!(
                 "Path: {}",
@@ -617,9 +909,21 @@ fn paint_mtu_bar(ui: &mut Ui, palette: &AppPalette, mtu: &MtuReport) {
             .strong()
             .monospace(),
         );
+        if let Some(ra_mtu) = mtu.ra_link_mtu {
+            status_pill(
+                ui,
+                &format!("RA AdvLinkMTU: {ra_mtu} B"),
+                if ra_mtu < link_val {
+                    palette.accent
+                } else {
+                    palette.ok
+                },
+                palette.card_subtle_bg,
+            );
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(
-                egui::RichText::new(format!("Link: {link_val} B · RFC 8200 Min: 1280 B"))
+                egui::RichText::new(format!("NIC: {link_val} B · Min: 1280 B"))
                     .size(11.0)
                     .color(palette.text_muted),
             );

@@ -6,18 +6,36 @@ mod tray;
 mod views;
 mod widgets;
 
-use app::NetScopeApp;
+use app::{NetScopeApp, ScreenshotConfig};
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
-fn parse_screenshot_dir() -> Option<PathBuf> {
+fn parse_screenshot_config() -> Option<ScreenshotConfig> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--screenshot-dir" {
-            return args.next().map(PathBuf::from);
+            return args.next().map(|p| ScreenshotConfig {
+                dir: PathBuf::from(p),
+                demo: false,
+            });
         }
         if let Some(val) = arg.strip_prefix("--screenshot-dir=") {
-            return Some(PathBuf::from(val));
+            return Some(ScreenshotConfig {
+                dir: PathBuf::from(val),
+                demo: false,
+            });
+        }
+        if arg == "--demo-screenshots" {
+            return args.next().map(|p| ScreenshotConfig {
+                dir: PathBuf::from(p),
+                demo: true,
+            });
+        }
+        if let Some(val) = arg.strip_prefix("--demo-screenshots=") {
+            return Some(ScreenshotConfig {
+                dir: PathBuf::from(val),
+                demo: true,
+            });
         }
     }
     None
@@ -32,7 +50,7 @@ fn main() -> eframe::Result<()> {
         )
         .init();
 
-    let screenshot_dir = parse_screenshot_dir();
+    let screenshot_cfg = parse_screenshot_config();
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -45,6 +63,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "NetScope",
         native_options,
-        Box::new(move |cc| Ok(Box::new(NetScopeApp::new(cc, screenshot_dir)))),
+        Box::new(move |cc| Ok(Box::new(NetScopeApp::new(cc, screenshot_cfg)))),
     )
 }

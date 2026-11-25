@@ -69,8 +69,20 @@ pub struct RaPrefixInfo {
     pub on_link: bool,
     pub valid_lft: Option<String>,
     pub preferred_lft: Option<String>,
+    #[serde(default)]
+    pub expire: Option<String>,
     pub router: Option<String>,
     pub router_reachable: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RaInterfaceParams {
+    pub ra_link_mtu: Option<u32>,
+    pub cur_hop_limit: Option<u8>,
+    pub base_reachable: Option<String>,
+    pub reachable: Option<String>,
+    pub retrans: Option<String>,
+    pub nd6_flags: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -94,6 +106,10 @@ pub struct LocalIpv6Inventory {
     pub addresses: Vec<Ipv6AddressEntry>,
     pub ra_router: RaRouterInfo,
     pub ra_prefixes: Vec<RaPrefixInfo>,
+    #[serde(default)]
+    pub ra_interface: RaInterfaceParams,
+    #[serde(default)]
+    pub raw_slaac_dump: String,
     pub ipv6_dns_servers: Vec<Ipv6Addr>,
     pub has_link_local: bool,
     pub has_gua: bool,
@@ -168,6 +184,8 @@ pub struct DualStackComparison {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MtuReport {
     pub link_mtu: Option<u32>,
+    #[serde(default)]
+    pub ra_link_mtu: Option<u32>,
     pub path_mtu: Option<u32>,
     pub large_frame_ok: bool,
     pub large_frame_bytes: usize,
@@ -382,6 +400,7 @@ pub fn parse_macos_ndp_p(output: &str, iface: &str) -> Vec<RaPrefixInfo> {
                     on_link: false,
                     valid_lft: None,
                     preferred_lft: None,
+                    expire: None,
                     router: None,
                     router_reachable: false,
                 });
@@ -403,6 +422,8 @@ pub fn parse_macos_ndp_p(output: &str, iface: &str) -> Vec<RaPrefixInfo> {
                     cur.valid_lft = Some(vl.to_string());
                 } else if let Some(pl) = clean.strip_prefix("pltime=") {
                     cur.preferred_lft = Some(pl.to_string());
+                } else if let Some(exp) = clean.strip_prefix("expire=") {
+                    cur.expire = Some(exp.to_string());
                 }
             }
         } else if trimmed != "advertised by" && !trimmed.starts_with("No advertising") {
@@ -421,6 +442,42 @@ pub fn parse_macos_ndp_p(output: &str, iface: &str) -> Vec<RaPrefixInfo> {
     }
 
     prefixes
+}
+
+/// Parses macOS `ndp -i <iface>` output for RA-advertised Link MTU, Hop Limit, and NDP timers.
+pub fn parse_macos_ndp_i(output: &str) -> RaInterfaceParams {
+    let mut params = RaInterfaceParams::default();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("Flags:") {
+            let f = rest.trim();
+            if !f.is_empty() {
+                params.nd6_flags = Some(f.to_string());
+            }
+            continue;
+        }
+        for tok in trimmed.split_whitespace() {
+            let clean = tok.trim_end_matches(',');
+            if let Some(v) = clean.strip_prefix("linkmtu=") {
+                if let Ok(m) = v.parse::<u32>()
+                    && m > 0
+                {
+                    params.ra_link_mtu = Some(m);
+                }
+            } else if let Some(v) = clean.strip_prefix("curhlim=") {
+                if let Ok(h) = v.parse::<u8>() {
+                    params.cur_hop_limit = Some(h);
+                }
+            } else if let Some(v) = clean.strip_prefix("basereachable=") {
+                params.base_reachable = Some(v.to_string());
+            } else if let Some(v) = clean.strip_prefix("reachable=") {
+                params.reachable = Some(v.to_string());
+            } else if let Some(v) = clean.strip_prefix("retrans=") {
+                params.retrans = Some(v.to_string());
+            }
+        }
+    }
+    params
 }
 
 /// Parses macOS `scutil --dns` output for unique IPv6 DNS server addresses.
@@ -542,6 +599,8 @@ pub fn collect_local_ipv6_inventory() -> Result<LocalIpv6Inventory, NetError> {
                 ..Default::default()
             },
             ra_prefixes: Vec::new(),
+            ra_interface: RaInterfaceParams::default(),
+            raw_slaac_dump: String::new(),
             ipv6_dns_servers: Vec::new(),
             has_link_local: false,
             has_gua: false,
@@ -570,35 +629,82 @@ pub fn collect_local_ipv6_inventory() -> Result<LocalIpv6Inventory, NetError> {
     }
 
     #[cfg(target_os = "macos")]
-    let (link_mtu, nd6_options, os_addr_flags, ra_prefixes) = {
+    let (link_mtu, nd6_options, os_addr_flags, ra_prefixes, ra_interface, raw_slaac_dump) = {
         let mut link_mtu = iface.mtu;
         let mut nd6_options = None;
         let mut os_addr_flags: HashMap<Ipv6Addr, OsIpv6AddrFlags> = HashMap::new();
         let mut ra_prefixes = Vec::new();
+        let mut ra_interface = RaInterfaceParams::default();
+        let mut raw_sections: Vec<String> = Vec::new();
+
+        if let Ok(out) = std::process::Command::new("/usr/sbin/ndp")
+            .arg("-rn")
+            .output()
+        {
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            if let Some(parsed_gw) = parse_macos_ndp_r(&text, &iface.name) {
+                ra_router = parsed_gw;
+            }
+            if !text.trim().is_empty() {
+                raw_sections.push(format!(
+                    "=== ndp -rn (Default Routers / RA Flags) ===\n{}",
+                    text.trim()
+                ));
+            }
+        }
+        if let Ok(out) = std::process::Command::new("/usr/sbin/ndp")
+            .arg("-pn")
+            .output()
+        {
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            ra_prefixes = parse_macos_ndp_p(&text, &iface.name);
+            if !text.trim().is_empty() {
+                raw_sections.push(format!(
+                    "=== ndp -pn (Advertised Prefixes / SLAAC Lifetimes) ===\n{}",
+                    text.trim()
+                ));
+            }
+        }
+        if let Ok(out) = std::process::Command::new("/usr/sbin/ndp")
+            .args(["-i", &iface.name])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            ra_interface = parse_macos_ndp_i(&text);
+            if !text.trim().is_empty() {
+                raw_sections.push(format!(
+                    "=== ndp -i {} (RA Link MTU & Timers) ===\n{}",
+                    iface.name,
+                    text.trim()
+                ));
+            }
+        }
         if let Ok(out) = std::process::Command::new("/sbin/ifconfig")
             .arg(&iface.name)
             .output()
         {
-            let text = String::from_utf8_lossy(&out.stdout);
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
             let parsed_if = parse_macos_ifconfig_ipv6(&text);
             if link_mtu.is_none() {
                 link_mtu = parsed_if.mtu;
             }
             nd6_options = parsed_if.nd6_options;
             os_addr_flags = parsed_if.addr_flags;
-        }
-        if let Ok(out) = std::process::Command::new("/usr/sbin/ndp")
-            .arg("-rn")
-            .output()
-            && let Some(parsed_gw) = parse_macos_ndp_r(&String::from_utf8_lossy(&out.stdout), &iface.name)
-        {
-            ra_router = parsed_gw;
-        }
-        if let Ok(out) = std::process::Command::new("/usr/sbin/ndp")
-            .arg("-pn")
-            .output()
-        {
-            ra_prefixes = parse_macos_ndp_p(&String::from_utf8_lossy(&out.stdout), &iface.name);
+            let relevant: Vec<&str> = text
+                .lines()
+                .filter(|l| {
+                    l.starts_with(&format!("{}:", iface.name))
+                        || l.contains("inet6 ")
+                        || l.contains("nd6 ")
+                })
+                .collect();
+            if !relevant.is_empty() {
+                raw_sections.push(format!(
+                    "=== ifconfig {} (IPv6 Interface State) ===\n{}",
+                    iface.name,
+                    relevant.join("\n")
+                ));
+            }
         }
         if ipv6_dns_servers.is_empty()
             && let Ok(out) = std::process::Command::new("/usr/sbin/scutil")
@@ -607,36 +713,92 @@ pub fn collect_local_ipv6_inventory() -> Result<LocalIpv6Inventory, NetError> {
         {
             ipv6_dns_servers = parse_macos_scutil_ipv6_dns(&String::from_utf8_lossy(&out.stdout));
         }
-        (link_mtu, nd6_options, os_addr_flags, ra_prefixes)
+        (
+            link_mtu,
+            nd6_options,
+            os_addr_flags,
+            ra_prefixes,
+            ra_interface,
+            raw_sections.join("\n\n"),
+        )
     };
 
     #[cfg(not(target_os = "macos"))]
-    let (link_mtu, nd6_options, os_addr_flags, ra_prefixes): (
+    let (link_mtu, nd6_options, os_addr_flags, ra_prefixes, mut ra_interface, mut raw_slaac_dump): (
         Option<u32>,
         Option<String>,
         HashMap<Ipv6Addr, OsIpv6AddrFlags>,
         Vec<RaPrefixInfo>,
-    ) = (iface.mtu, None, HashMap::new(), Vec::new());
+        RaInterfaceParams,
+        String,
+    ) = (
+        iface.mtu,
+        None,
+        HashMap::new(),
+        Vec::new(),
+        RaInterfaceParams::default(),
+        String::new(),
+    );
 
     #[cfg(target_os = "linux")]
     {
-        if ra_router.gateway.is_none()
-            && let Ok(out) = std::process::Command::new("ip")
-                .args(["-6", "route", "show", "default", "dev", &iface.name])
-                .output()
+        let mut raw_sections = Vec::new();
+        if let Ok(out) = std::process::Command::new("ip")
+            .args(["-6", "route", "show", "dev", &iface.name])
+            .output()
         {
-            let text = String::from_utf8_lossy(&out.stdout);
-            let tokens: Vec<&str> = text.split_whitespace().collect();
-            for win in tokens.windows(2) {
-                if win[0] == "via"
-                    && let Ok(gw) = win[1].split('%').next().unwrap_or(win[1]).parse::<Ipv6Addr>()
-                {
-                    ra_router.gateway = Some(gw);
-                    ra_router.gateway_display = Some(format!("{gw}%{}", iface.name));
-                    break;
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            if !text.trim().is_empty() {
+                raw_sections.push(format!(
+                    "=== ip -6 route show dev {} ===\n{}",
+                    iface.name,
+                    text.trim()
+                ));
+            }
+            if ra_router.gateway.is_none() {
+                for line in text.lines() {
+                    if line.starts_with("default ") {
+                        let tokens: Vec<&str> = line.split_whitespace().collect();
+                        for win in tokens.windows(2) {
+                            if win[0] == "via"
+                                && let Ok(gw) =
+                                    win[1].split('%').next().unwrap_or(win[1]).parse::<Ipv6Addr>()
+                            {
+                                ra_router.gateway = Some(gw);
+                                ra_router.gateway_display = Some(format!("{gw}%{}", iface.name));
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
+        if let Ok(out) = std::process::Command::new("ip")
+            .args(["-6", "addr", "show", "dev", &iface.name])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            if !text.trim().is_empty() {
+                raw_sections.push(format!(
+                    "=== ip -6 addr show dev {} ===\n{}",
+                    iface.name,
+                    text.trim()
+                ));
+            }
+        }
+        if let Ok(mtu_txt) =
+            std::fs::read_to_string(format!("/proc/sys/net/ipv6/conf/{}/mtu", iface.name))
+            && let Ok(m) = mtu_txt.trim().parse::<u32>()
+        {
+            ra_interface.ra_link_mtu = Some(m);
+        }
+        if let Ok(hl_txt) =
+            std::fs::read_to_string(format!("/proc/sys/net/ipv6/conf/{}/hop_limit", iface.name))
+            && let Ok(h) = hl_txt.trim().parse::<u8>()
+        {
+            ra_interface.cur_hop_limit = Some(h);
+        }
+        raw_slaac_dump = raw_sections.join("\n\n");
         if ipv6_dns_servers.is_empty()
             && let Ok(resolv) = std::fs::read_to_string("/etc/resolv.conf")
         {
@@ -714,6 +876,8 @@ pub fn collect_local_ipv6_inventory() -> Result<LocalIpv6Inventory, NetError> {
         addresses,
         ra_router,
         ra_prefixes,
+        ra_interface,
+        raw_slaac_dump,
         ipv6_dns_servers,
         has_link_local,
         has_gua,
@@ -1326,6 +1490,8 @@ async fn run_large_frame_v6_test(target_v6: Ipv6Addr) -> Result<(usize, f64), St
         .get(format!(
             "https://speed.cloudflare.com/__down?bytes={LARGE_FRAME_TARGET_BYTES}"
         ))
+        .header(reqwest::header::REFERER, "https://speed.cloudflare.com/")
+        .header(reqwest::header::ORIGIN, "https://speed.cloudflare.com")
         .send()
         .await
         .map_err(|e| {
@@ -1432,6 +1598,8 @@ pub async fn run_ipv6_check(
             ..Default::default()
         },
         ra_prefixes: Vec::new(),
+        ra_interface: RaInterfaceParams::default(),
+        raw_slaac_dump: String::new(),
         ipv6_dns_servers: Vec::new(),
         has_link_local: false,
         has_gua: false,
@@ -1444,6 +1612,7 @@ pub async fn run_ipv6_check(
     let mut dual_stack = DualStackComparison::default();
     let mut mtu = MtuReport {
         link_mtu: inventory.link_mtu,
+        ra_link_mtu: inventory.ra_interface.ra_link_mtu,
         status_summary: "Pending PMTUD check".into(),
         ..Default::default()
     };
@@ -1770,6 +1939,7 @@ pub async fn run_ipv6_check(
             if !dual_stack.ipv6.ok && !inventory.has_gua {
                 mtu = MtuReport {
                     link_mtu: inventory.link_mtu,
+                    ra_link_mtu: inventory.ra_interface.ra_link_mtu,
                     path_mtu: None,
                     large_frame_ok: false,
                     large_frame_bytes: 0,
@@ -1816,7 +1986,8 @@ pub async fn run_ipv6_check(
 
                 let blackhole_suspected = dual_stack.ipv6.ok && !large_frame_ok;
                 let link_val = inventory.link_mtu;
-                let effective_mtu = path_mtu.or(link_val);
+                let ra_mtu_val = inventory.ra_interface.ra_link_mtu;
+                let effective_mtu = path_mtu.or(ra_mtu_val).or(link_val);
 
                 let (health, short_badge, status_summary) = if blackhole_suspected {
                     (
@@ -1837,15 +2008,24 @@ pub async fn run_ipv6_check(
                 } else if large_frame_ok {
                     let mtu_num = effective_mtu.unwrap_or(1500);
                     let ms = large_frame_ms.unwrap_or(0.0);
+                    let ra_clamped = matches!((ra_mtu_val, link_val), (Some(ra), Some(l)) if ra < l);
                     let reduced = matches!((path_mtu, link_val), (Some(p), Some(l)) if p < l);
-                    let badge = if reduced {
+                    let badge = if ra_clamped {
+                        format!("{mtu_num} B (RA)")
+                    } else if reduced {
                         format!("{mtu_num} B (PMTUD)")
                     } else {
                         format!("{mtu_num} B")
                     };
-                    let summary = if reduced {
+                    let summary = if ra_clamped {
                         format!(
-                            "Path MTU {mtu_num} B (link {} B) · 32 KB TLS frame passed ({ms:.0} ms)",
+                            "Path MTU {mtu_num} B (RA AdvLinkMTU {} B, NIC {} B) · 32 KB TLS frame passed ({ms:.0} ms)",
+                            ra_mtu_val.unwrap_or(mtu_num),
+                            link_val.unwrap_or(1500)
+                        )
+                    } else if reduced {
+                        format!(
+                            "Path MTU {mtu_num} B (NIC {} B) · 32 KB TLS frame passed ({ms:.0} ms)",
                             link_val.unwrap_or(1500)
                         )
                     } else {
@@ -1865,6 +2045,7 @@ pub async fn run_ipv6_check(
 
                 mtu = MtuReport {
                     link_mtu: link_val,
+                    ra_link_mtu: ra_mtu_val,
                     path_mtu,
                     large_frame_ok,
                     large_frame_bytes,
@@ -2023,8 +2204,24 @@ flags=AILSO vltime=infinity, pltime=infinity, expire=Never, ref=0
         assert!(prefixes[0].on_link);
         assert_eq!(prefixes[0].valid_lft.as_deref(), Some("86400"));
         assert_eq!(prefixes[0].preferred_lft.as_deref(), Some("14400"));
+        assert_eq!(prefixes[0].expire.as_deref(), Some("23h58m46s"));
         assert!(prefixes[0].router_reachable);
         assert_eq!(prefixes[1].prefix, "2001:db8:1234::/64");
+    }
+
+    #[test]
+    fn parses_macos_ndp_i_ra_link_mtu_and_timers() {
+        let sample = "\
+linkmtu=1484, curhlim=64, basereachable=30s0ms, reachable=15s, retrans=1s0ms
+Flags: 0x201 PERFORMNUD DAD
+";
+        let params = parse_macos_ndp_i(sample);
+        assert_eq!(params.ra_link_mtu, Some(1484));
+        assert_eq!(params.cur_hop_limit, Some(64));
+        assert_eq!(params.base_reachable.as_deref(), Some("30s0ms"));
+        assert_eq!(params.reachable.as_deref(), Some("15s"));
+        assert_eq!(params.retrans.as_deref(), Some("1s0ms"));
+        assert_eq!(params.nd6_flags.as_deref(), Some("0x201 PERFORMNUD DAD"));
     }
 
     #[test]
@@ -2102,6 +2299,8 @@ destination: ::
                 ..Default::default()
             },
             ra_prefixes: Vec::new(),
+            ra_interface: RaInterfaceParams::default(),
+            raw_slaac_dump: String::new(),
             ipv6_dns_servers: Vec::new(),
             has_link_local: true,
             has_gua: true,
@@ -2132,6 +2331,7 @@ destination: ::
         };
         let mtu = MtuReport {
             link_mtu: Some(1500),
+            ra_link_mtu: Some(1484),
             path_mtu: Some(1500),
             large_frame_ok: false,
             large_frame_bytes: 0,
@@ -2161,6 +2361,8 @@ destination: ::
                 ..Default::default()
             },
             ra_prefixes: Vec::new(),
+            ra_interface: RaInterfaceParams::default(),
+            raw_slaac_dump: String::new(),
             ipv6_dns_servers: Vec::new(),
             has_link_local: false,
             has_gua: false,

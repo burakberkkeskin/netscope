@@ -1,20 +1,36 @@
 use crate::theme::{AppPalette, section_label, status_pill};
-use crate::widgets::nice_y_grid_spacer;
-use egui::{Align, Align2, Color32, FontId, Layout, Rect, Sense, Stroke, Ui, pos2, vec2};
+use crate::widgets::{ip_family_selector, nice_y_grid_spacer};
+use egui::{
+    Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Rect, Sense, Stroke, Ui,
+    pos2, vec2,
+};
 use egui_extras::{Column, TableBuilder};
-use egui_plot::{AxisHints, HLine, Legend, Line, LineStyle, Plot, PlotPoints, uniform_grid_spacer};
-use netscope_core::CancelToken;
+use egui_plot::{
+    AxisHints, Corner, HLine, Legend, Line, LineStyle, Plot, PlotPoints, uniform_grid_spacer,
+};
 use netscope_core::history::{PersistedState, SpeedTestRecord};
 use netscope_core::speedtest::{
-    BufferbloatGrade, SpeedTestEvent, SpeedTestPhase, SpeedTestResult, WorkloadQuality,
-    evaluate_bufferbloat_workloads, run_speedtest,
+    BufferbloatGrade, SpeedTestEvent, SpeedTestPhase, SpeedTestResult, SpeedTestServerInfo,
+    WorkloadQuality, evaluate_bufferbloat_workloads, run_speedtest,
 };
+use netscope_core::{CancelToken, IpFamily};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpeedTestSubTab {
+    #[default]
+    SpeedTest,
+    Bufferbloat,
+    History,
+}
 
 #[derive(Default)]
 pub struct SpeedTestState {
     pub running: bool,
+    pub ip_family: IpFamily,
+    pub sub_tab: SpeedTestSubTab,
+    pub server_info: Option<SpeedTestServerInfo>,
     pub phase: Option<SpeedTestPhase>,
     pub idle_rtts: Vec<f64>,
     pub dl_samples: Vec<[f64; 2]>,
@@ -35,6 +51,7 @@ pub struct SpeedTestState {
 impl SpeedTestState {
     pub fn start(&mut self, rt: &Runtime, ctx: &egui::Context) {
         self.stop();
+        self.server_info = None;
         self.idle_rtts.clear();
         self.dl_samples.clear();
         self.ul_samples.clear();
@@ -49,6 +66,7 @@ impl SpeedTestState {
         self.error = None;
         self.phase = Some(SpeedTestPhase::IdleLatency);
 
+        let family = self.ip_family;
         let (tx, rx) = mpsc::unbounded_channel();
         let cancel = CancelToken::new();
         self.cancel = Some(cancel.clone());
@@ -65,7 +83,7 @@ impl SpeedTestState {
                     ctx_fwd.request_repaint();
                 }
             });
-            run_speedtest(fwd_tx, cancel).await;
+            run_speedtest(family, fwd_tx, cancel).await;
             let _ = fwd.await;
             ctx_clone.request_repaint();
         });
@@ -80,6 +98,7 @@ impl SpeedTestState {
 
     pub fn clear(&mut self) {
         self.stop();
+        self.server_info = None;
         self.idle_rtts.clear();
         self.dl_samples.clear();
         self.ul_samples.clear();
@@ -100,6 +119,9 @@ impl SpeedTestState {
         if let Some(rx) = &mut self.rx {
             while let Ok(ev) = rx.try_recv() {
                 match ev {
+                    SpeedTestEvent::ServerInfo(info) => {
+                        self.server_info = Some(info);
+                    }
                     SpeedTestEvent::PhaseChanged(p) => {
                         self.phase = Some(p);
                     }
@@ -165,11 +187,12 @@ pub fn render(
     history: &PersistedState,
     rt: &Runtime,
 ) {
+    // Row 1: Compact primary controls (left) + Edge PoP / Live RTT (right) — never overflows at 920px
     ui.horizontal(|ui| {
         let btn = if state.running {
-            "Stop Speed Test"
+            "Stop Test"
         } else {
-            "Start Speed Test (4 Streams)"
+            "Start Test"
         };
         if ui.button(btn).clicked() {
             if state.running {
@@ -179,340 +202,526 @@ pub fn render(
             }
         }
 
-        render_phase_stepper(ui, palette, state.phase, state.running);
+        ui.add_enabled_ui(!state.running, |ui| {
+            ip_family_selector(ui, palette, &mut state.ip_family);
+        });
 
-        if let Some(rtt) = state.live_loaded_rtt
-            && state.running
-        {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if let Some(ref info) = state.server_info {
                 status_pill(
                     ui,
-                    &format!("Live RTT {rtt:.1} ms"),
+                    &info.badge_label(),
+                    palette.text_primary,
+                    palette.card_subtle_bg,
+                );
+            } else if let Some(ref res) = state.result
+                && let Some(ref colo) = res.server_colo
+            {
+                let stack = if res.is_ipv6 { "IPv6" } else { "IPv4" };
+                status_pill(
+                    ui,
+                    &format!("Cloudflare {colo} ({stack})"),
+                    palette.text_primary,
+                    palette.card_subtle_bg,
+                );
+            }
+            if let Some(rtt) = state.live_loaded_rtt
+                && state.running
+            {
+                status_pill(
+                    ui,
+                    &format!("RTT {rtt:.0} ms"),
                     palette.accent,
                     palette.card_subtle_bg,
                 );
-            });
-        }
+            }
+        });
     });
 
     if let Some(ref err) = state.error {
         ui.add_space(6.0);
-        status_pill(ui, err, palette.err, palette.err_bg);
+        palette.card_frame().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.add(
+                egui::Label::new(egui::RichText::new(err).size(12.5).color(palette.err)).wrap(),
+            );
+        });
     }
 
-    ui.add_space(10.0);
+    ui.add_space(6.0);
+
+    // Row 2: Dedicated Sub-Tabs (left) + Phase Stepper or Compact Result Summary (right)
+    ui.horizontal(|ui| {
+        render_sub_tabs(ui, palette, state, history.speedtest_history.len());
+
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if state.running {
+                render_phase_stepper_rtl(ui, palette, state.phase, true);
+            } else if let Some(ref res) = state.result {
+                let (fg, bg) = bloat_colors(palette, res.bufferbloat_grade);
+                status_pill(
+                    ui,
+                    &format!("Bloat {}", res.bufferbloat_grade.label()),
+                    fg,
+                    bg,
+                );
+                status_pill(
+                    ui,
+                    &format!("↓ {:.0} / ↑ {:.0} Mbps", res.download_mbps, res.upload_mbps),
+                    palette.accent,
+                    palette.card_subtle_bg,
+                );
+            }
+        });
+    });
+
+    ui.add_space(8.0);
+
+    let idle_ms = state
+        .result
+        .as_ref()
+        .and_then(|r| r.unloaded_stats.median_ms)
+        .or_else(|| {
+            (!state.idle_rtts.is_empty()).then(|| {
+                let mut sorted = state.idle_rtts.clone();
+                sorted.sort_by(|a, b| a.total_cmp(b));
+                sorted[sorted.len() / 2]
+            })
+        });
 
     egui::ScrollArea::vertical()
         .id_salt("speedtest_scroll")
+        .show(ui, |ui| match state.sub_tab {
+            SpeedTestSubTab::SpeedTest => render_throughput_tab(ui, palette, state, idle_ms),
+            SpeedTestSubTab::Bufferbloat => render_bufferbloat_tab(ui, palette, state, idle_ms),
+            SpeedTestSubTab::History => render_history_tab(ui, palette, history),
+        });
+}
+
+fn render_sub_tabs(
+    ui: &mut Ui,
+    palette: &AppPalette,
+    state: &mut SpeedTestState,
+    history_count: usize,
+) {
+    let bloat_lbl = match &state.result {
+        Some(r) => format!("Bufferbloat ({})", r.bufferbloat_grade.label()),
+        None => "Bufferbloat".into(),
+    };
+    let hist_lbl = if history_count > 0 {
+        format!("History ({history_count})")
+    } else {
+        "History".into()
+    };
+
+    let tabs = [
+        (SpeedTestSubTab::SpeedTest, "Speed Test".to_string()),
+        (SpeedTestSubTab::Bufferbloat, bloat_lbl),
+        (SpeedTestSubTab::History, hist_lbl),
+    ];
+
+    Frame::new()
+        .fill(palette.card_subtle_bg)
+        .stroke(Stroke::new(1.0, palette.card_border))
+        .corner_radius(CornerRadius::same(7))
+        .inner_margin(Margin::same(2))
         .show(ui, |ui| {
-            // 1. Upgraded KPI Cards
-            let dl_val = state
-                .result
-                .as_ref()
-                .map(|r| r.download_mbps)
-                .or(state.live_dl_mbps);
-            let ul_val = state
-                .result
-                .as_ref()
-                .map(|r| r.upload_mbps)
-                .or(state.live_ul_mbps);
-            let idle_ms = state
-                .result
-                .as_ref()
-                .and_then(|r| r.unloaded_stats.median_ms)
-                .or_else(|| {
-                    (!state.idle_rtts.is_empty()).then(|| {
-                        let mut sorted = state.idle_rtts.clone();
-                        sorted.sort_by(|a, b| a.total_cmp(b));
-                        sorted[sorted.len() / 2]
-                    })
-                });
-            let idle_jitter = state
-                .result
-                .as_ref()
-                .and_then(|r| r.unloaded_stats.jitter_ms);
-
-            ui.columns(4, |cols| {
-                kpi_card(
-                    &mut cols[0],
-                    palette,
-                    "Download",
-                    &dl_val
-                        .map(|m| format!("{m:.1} Mbps"))
-                        .unwrap_or_else(|| "—".into()),
-                    &state
-                        .dl_peak_mbps
-                        .map(|p| format!("Peak {p:.1} Mbps"))
-                        .unwrap_or_else(|| "4 parallel TCP streams".into()),
-                    Some(palette.accent),
-                );
-                kpi_card(
-                    &mut cols[1],
-                    palette,
-                    "Upload",
-                    &ul_val
-                        .map(|m| format!("{m:.1} Mbps"))
-                        .unwrap_or_else(|| "—".into()),
-                    &state
-                        .ul_peak_mbps
-                        .map(|p| format!("Peak {p:.1} Mbps"))
-                        .unwrap_or_else(|| "4 parallel TCP streams".into()),
-                    Some(palette.ok),
-                );
-                kpi_card(
-                    &mut cols[2],
-                    palette,
-                    "Idle Latency",
-                    &idle_ms
-                        .map(|m| format!("{m:.1} ms"))
-                        .unwrap_or_else(|| "—".into()),
-                    &idle_jitter
-                        .map(|j| format!("Jitter {j:.1} ms"))
-                        .unwrap_or_else(|| "Unloaded baseline".into()),
-                    None,
-                );
-                cols[3].vertical(|ui| {
-                    palette.subtle_card_frame().show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        ui.set_min_height(56.0);
-                        ui.label(
-                            egui::RichText::new("Bufferbloat Grade")
-                                .size(11.0)
-                                .color(palette.text_muted),
-                        );
-                        if let Some(ref res) = state.result {
-                            let (fg, _bg) = bloat_colors(palette, res.bufferbloat_grade);
-                            let idle = res.unloaded_stats.median_ms.unwrap_or(0.0);
-                            let worst = res
-                                .loaded_dl_stats
-                                .median_ms
-                                .unwrap_or(idle)
-                                .max(res.loaded_ul_stats.median_ms.unwrap_or(idle));
-                            let bloat = (worst - idle).max(0.0);
-                            ui.label(
-                                egui::RichText::new(res.bufferbloat_grade.label())
-                                    .size(18.0)
-                                    .strong()
-                                    .color(fg),
-                            );
-                            ui.label(
-                                egui::RichText::new(format!("Worst +{bloat:.0} ms under load"))
-                                    .size(11.0)
-                                    .color(palette.text_muted),
-                            );
-                        } else {
-                            ui.label(
-                                egui::RichText::new("—")
-                                    .size(18.0)
-                                    .strong()
-                                    .monospace()
-                                    .color(palette.text_muted),
-                            );
-                            ui.label(
-                                egui::RichText::new("Measured under full load")
-                                    .size(11.0)
-                                    .color(palette.text_muted),
-                            );
-                        }
-                    });
-                });
-            });
-
-            ui.add_space(10.0);
-
-            // 2. Live Throughput Area Chart
-            palette.card_frame().show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                section_label(ui, palette, "LIVE THROUGHPUT — MBPS (CLOUDFLARE 4-STREAM)");
-                ui.add_space(4.0);
-                let y_axis = AxisHints::new_y().min_thickness(54.0).formatter(|mark, _range| {
-                    let v = if mark.value.abs() < 0.5 { 0.0 } else { mark.value };
-                    format!("{v:.0} Mbps")
-                });
-                let mut plot = Plot::new("speedtest_plot")
-                    .height(180.0)
-                    .show_background(false)
-                    .legend(Legend::default())
-                    .include_y(0.0)
-                    .custom_y_axes(vec![y_axis])
-                    .y_grid_spacer(uniform_grid_spacer(nice_y_grid_spacer))
-                    .x_axis_formatter(|mark, _range| {
-                        let v = if mark.value.abs() < 0.05 { 0.0 } else { mark.value };
-                        format!("{v:.1}s")
-                    });
-                if state.dl_samples.is_empty() && state.ul_samples.is_empty() {
-                    plot = plot
-                        .default_x_bounds(0.0, 8.0)
-                        .default_y_bounds(0.0, 100.0);
-                }
-                plot.show(ui, |plot_ui| {
-                        if !state.dl_samples.is_empty() {
-                            plot_ui.line(
-                                Line::new("Download", PlotPoints::from(state.dl_samples.clone()))
-                                    .color(palette.accent)
-                                    .width(2.2)
-                                    .fill(0.0)
-                                    .fill_alpha(0.14),
-                            );
-                        }
-                        if !state.ul_samples.is_empty() {
-                            plot_ui.line(
-                                Line::new("Upload", PlotPoints::from(state.ul_samples.clone()))
-                                    .color(palette.ok)
-                                    .width(2.2)
-                                    .fill(0.0)
-                                    .fill_alpha(0.14),
-                            );
-                        }
-                        if let Some(ref res) = state.result {
-                            if res.download_mbps > 0.0 {
-                                plot_ui.hline(
-                                    HLine::new("Avg Download", res.download_mbps)
-                                        .color(palette.accent)
-                                        .width(1.2)
-                                        .style(LineStyle::dashed_dense()),
-                                );
-                            }
-                            if res.upload_mbps > 0.0 {
-                                plot_ui.hline(
-                                    HLine::new("Avg Upload", res.upload_mbps)
-                                        .color(palette.ok)
-                                        .width(1.2)
-                                        .style(LineStyle::dashed_dense()),
-                                );
-                            }
-                        }
-                    });
-            });
-
-            ui.add_space(10.0);
-
-            // 3. Detailed Bufferbloat Analysis & Loaded Latency Timeline
-            render_bufferbloat_details(ui, palette, state, idle_ms);
-
-            ui.add_space(10.0);
-
-            // 4. Persistent Run History
-            palette.card_frame().show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                section_label(ui, palette, "SPEED TEST HISTORY");
-                ui.add_space(4.0);
-                if history.speedtest_history.is_empty() {
-                    ui.label(
-                        egui::RichText::new("No past speed tests recorded yet.")
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (tab, label) in tabs {
+                    let selected = state.sub_tab == tab;
+                    let fill = if selected {
+                        palette.selected_bg
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+                    let fg = if selected {
+                        Color32::WHITE
+                    } else {
+                        palette.text_primary
+                    };
+                    let btn = egui::Button::new(
+                        egui::RichText::new(label)
                             .size(12.0)
-                            .color(palette.text_muted),
-                    );
-                } else {
-                    TableBuilder::new(ui)
-                        .id_salt("speedtest_history_table")
-                        .striped(true)
-                        .max_scroll_height(160.0)
-                        .column(Column::exact(132.0))
-                        .column(Column::exact(105.0))
-                        .column(Column::exact(105.0))
-                        .column(Column::exact(90.0))
-                        .column(Column::exact(140.0))
-                        .column(Column::remainder())
-                        .header(22.0, |mut h| {
-                            h.col(|ui| {
-                                ui.strong("When");
-                            });
-                            h.col(|ui| {
-                                ui.strong("Download");
-                            });
-                            h.col(|ui| {
-                                ui.strong("Upload");
-                            });
-                            h.col(|ui| {
-                                ui.strong("Idle RTT");
-                            });
-                            h.col(|ui| {
-                                ui.strong("DL / UL Loaded");
-                            });
-                            h.col(|ui| {
-                                ui.strong("Grade");
-                            });
-                        })
-                        .body(|body| {
-                            body.rows(22.0, history.speedtest_history.len(), |mut row| {
-                                let r = &history.speedtest_history[row.index()];
-                                row.col(|ui| {
-                                    ui.monospace(
-                                        r.timestamp
-                                            .with_timezone(&chrono::Local)
-                                            .format("%Y-%m-%d %H:%M")
-                                            .to_string(),
-                                    );
-                                });
-                                row.col(|ui| {
-                                    ui.monospace(format!("{:.1} Mbps", r.download_mbps));
-                                });
-                                row.col(|ui| {
-                                    ui.monospace(format!("{:.1} Mbps", r.upload_mbps));
-                                });
-                                row.col(|ui| {
-                                    ui.monospace(format!("{:.1} ms", r.idle_median_ms));
-                                });
-                                row.col(|ui| {
-                                    let dl = r
-                                        .loaded_dl_median_ms
-                                        .map(|m| format!("{m:.0}"))
-                                        .unwrap_or_else(|| "—".into());
-                                    let ul = r
-                                        .loaded_ul_median_ms
-                                        .map(|m| format!("{m:.0}"))
-                                        .unwrap_or_else(|| "—".into());
-                                    ui.monospace(format!("{dl} / {ul} ms"));
-                                });
-                                row.col(|ui| {
-                                    let (fg, bg) = bloat_colors(palette, r.bufferbloat_grade);
-                                    status_pill(ui, r.bufferbloat_grade.label(), fg, bg);
-                                });
-                            });
-                        });
+                            .strong()
+                            .color(fg),
+                    )
+                    .fill(fill)
+                    .frame(selected)
+                    .corner_radius(CornerRadius::same(5))
+                    .min_size(vec2(84.0, 22.0));
+                    if ui.add(btn).clicked() {
+                        state.sub_tab = tab;
+                    }
                 }
             });
         });
 }
 
-fn render_phase_stepper(
+fn render_throughput_tab(
     ui: &mut Ui,
     palette: &AppPalette,
-    phase: Option<SpeedTestPhase>,
-    running: bool,
+    state: &mut SpeedTestState,
+    idle_ms: Option<f64>,
 ) {
-    let steps = [
-        ("1. Idle", SpeedTestPhase::IdleLatency),
-        ("2. Download", SpeedTestPhase::Download),
-        ("3. Upload", SpeedTestPhase::Upload),
-        ("4. Grade", SpeedTestPhase::Completed),
-    ];
+    let dl_val = state
+        .result
+        .as_ref()
+        .map(|r| r.download_mbps)
+        .or(state.live_dl_mbps);
+    let ul_val = state
+        .result
+        .as_ref()
+        .map(|r| r.upload_mbps)
+        .or(state.live_ul_mbps);
+    let idle_jitter = state
+        .result
+        .as_ref()
+        .and_then(|r| r.unloaded_stats.jitter_ms);
 
-    let active_idx = match phase {
-        None => None,
-        Some(SpeedTestPhase::IdleLatency) => Some(0),
-        Some(SpeedTestPhase::Download) => Some(1),
-        Some(SpeedTestPhase::Upload) => Some(2),
-        Some(SpeedTestPhase::Completed) => Some(3),
-    };
+    let edge_val = state
+        .server_info
+        .as_ref()
+        .map(|i| {
+            let s = if i.is_ipv6 { "IPv6" } else { "IPv4" };
+            match &i.colo {
+                Some(c) => format!("{c} · {s}"),
+                None => s.into(),
+            }
+        })
+        .or_else(|| {
+            state.result.as_ref().map(|r| {
+                let s = if r.is_ipv6 { "IPv6" } else { "IPv4" };
+                match &r.server_colo {
+                    Some(c) => format!("{c} · {s}"),
+                    None => s.into(),
+                }
+            })
+        })
+        .unwrap_or_else(|| "—".into());
 
-    for (idx, (lbl, _)) in steps.iter().enumerate() {
-        let (fg, bg) = match active_idx {
-            Some(cur) if idx < cur || (!running && cur == 3) => (palette.ok, palette.ok_bg),
-            Some(cur) if idx == cur && running => (palette.accent, palette.card_subtle_bg),
-            _ => (palette.text_muted, palette.card_subtle_bg),
-        };
-        status_pill(ui, lbl, fg, bg);
-    }
+    let edge_sub = state
+        .server_info
+        .as_ref()
+        .map(|i| i.ip.to_string())
+        .or_else(|| {
+            state
+                .result
+                .as_ref()
+                .and_then(|r| r.server_ip.map(|ip| ip.to_string()))
+        })
+        .unwrap_or_else(|| "Cloudflare Speed Edge".into());
+
+    ui.columns(4, |cols| {
+        kpi_card(
+            &mut cols[0],
+            palette,
+            "Download",
+            &dl_val
+                .map(|m| format!("{m:.1} Mbps"))
+                .unwrap_or_else(|| "—".into()),
+            &state
+                .dl_peak_mbps
+                .map(|p| format!("Peak {p:.1} Mbps"))
+                .unwrap_or_else(|| "4 parallel TCP streams".into()),
+            Some(palette.accent),
+        );
+        kpi_card(
+            &mut cols[1],
+            palette,
+            "Upload",
+            &ul_val
+                .map(|m| format!("{m:.1} Mbps"))
+                .unwrap_or_else(|| "—".into()),
+            &state
+                .ul_peak_mbps
+                .map(|p| format!("Peak {p:.1} Mbps"))
+                .unwrap_or_else(|| "4 continuous TLS streams".into()),
+            Some(palette.ok),
+        );
+        kpi_card(
+            &mut cols[2],
+            palette,
+            "Idle Latency",
+            &idle_ms
+                .map(|m| format!("{m:.1} ms"))
+                .unwrap_or_else(|| "—".into()),
+            &idle_jitter
+                .map(|j| format!("Jitter {j:.1} ms"))
+                .unwrap_or_else(|| "Unloaded baseline".into()),
+            None,
+        );
+        kpi_card(&mut cols[3], palette, "Edge PoP", &edge_val, &edge_sub, None);
+    });
+
+    ui.add_space(10.0);
+
+    // Two dedicated side-by-side throughput charts so asymmetric links (e.g. 780 DL / 45 UL)
+    // each auto-scale to their own full Y range without squashing Upload into the floor.
+    let plot_h = (ui.available_height() - 56.0).clamp(200.0, 310.0);
+    let total_w = ui.available_width();
+    let gap = 10.0;
+    let half_w = ((total_w - gap) * 0.5).max(200.0);
+
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(vec2(half_w, 10.0), Layout::top_down(Align::LEFT), |ui| {
+            ui.set_width(half_w);
+            render_single_throughput_chart(
+                ui,
+                palette,
+                "speedtest_dl_plot",
+                "DOWNLOAD THROUGHPUT (MBPS)",
+                "Download",
+                "Avg Download",
+                &state.dl_samples,
+                state.result.as_ref().map(|r| r.download_mbps),
+                palette.accent,
+                plot_h,
+            );
+        });
+
+        ui.add_space(gap);
+
+        ui.allocate_ui_with_layout(vec2(half_w, 10.0), Layout::top_down(Align::LEFT), |ui| {
+            ui.set_width(half_w);
+            render_single_throughput_chart(
+                ui,
+                palette,
+                "speedtest_ul_plot",
+                "UPLOAD THROUGHPUT (MBPS)",
+                "Upload",
+                "Avg Upload",
+                &state.ul_samples,
+                state.result.as_ref().map(|r| r.upload_mbps),
+                palette.ok,
+                plot_h,
+            );
+        });
+    });
 }
 
-fn render_bufferbloat_details(
+#[allow(clippy::too_many_arguments)]
+fn render_single_throughput_chart(
+    ui: &mut Ui,
+    palette: &AppPalette,
+    plot_id: &str,
+    title: &str,
+    series_name: &str,
+    avg_name: &str,
+    samples: &[[f64; 2]],
+    avg_mbps: Option<f64>,
+    color: Color32,
+    height: f32,
+) {
+    palette.card_frame().show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.horizontal(|ui| {
+            section_label(ui, palette, title);
+            if let Some(avg) = avg_mbps
+                && avg > 0.0
+            {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Avg {avg:.1} Mbps"))
+                            .size(11.5)
+                            .monospace()
+                            .strong()
+                            .color(color),
+                    );
+                });
+            }
+        });
+        ui.add_space(4.0);
+
+        let y_axis = AxisHints::new_y()
+            .min_thickness(46.0)
+            .formatter(|mark, _range| {
+                let v = if mark.value.abs() < 0.5 {
+                    0.0
+                } else {
+                    mark.value
+                };
+                format!("{v:.0}")
+            });
+
+        let peak_y = samples
+            .iter()
+            .map(|p| p[1])
+            .fold(0.0_f64, f64::max)
+            .max(avg_mbps.unwrap_or(0.0));
+        let headroom_y = if peak_y > 0.0 {
+            (peak_y * 1.18).max(10.0)
+        } else {
+            100.0
+        };
+        let max_x = samples
+            .iter()
+            .map(|p| p[0])
+            .fold(0.0_f64, f64::max)
+            .max(8.0);
+
+        Plot::new(plot_id)
+            .height(height)
+            .show_background(false)
+            .allow_drag(false)
+            .allow_zoom(false)
+            .allow_scroll(false)
+            .auto_bounds([true, true])
+            .include_x(0.0)
+            .include_x(max_x)
+            .include_y(0.0)
+            .include_y(headroom_y)
+            .custom_y_axes(vec![y_axis])
+            .y_grid_spacer(uniform_grid_spacer(nice_y_grid_spacer))
+            .x_grid_spacer(uniform_grid_spacer(|_| [2.0, 1.0, 0.5]))
+            .x_axis_formatter(|mark, _range| {
+                let v = if mark.value.abs() < 0.05 {
+                    0.0
+                } else {
+                    mark.value
+                };
+                format!("{v:.0}s")
+            })
+            .show(ui, |plot_ui| {
+                plot_ui.set_auto_bounds([true, true]);
+                if !samples.is_empty() {
+                    plot_ui.line(
+                        Line::new(series_name, PlotPoints::from(samples.to_vec()))
+                            .color(color)
+                            .width(2.3)
+                            .fill(0.0)
+                            .fill_alpha(0.16),
+                    );
+                }
+                if let Some(avg) = avg_mbps
+                    && avg > 0.0
+                {
+                    plot_ui.hline(
+                        HLine::new(avg_name, avg)
+                            .color(color)
+                            .width(1.2)
+                            .style(LineStyle::dashed_dense()),
+                    );
+                }
+            });
+    });
+}
+
+fn render_bufferbloat_tab(
     ui: &mut Ui,
     palette: &AppPalette,
     state: &SpeedTestState,
     idle_ms: Option<f64>,
 ) {
+    let dl_loaded = state
+        .result
+        .as_ref()
+        .and_then(|r| r.loaded_dl_stats.median_ms);
+    let ul_loaded = state
+        .result
+        .as_ref()
+        .and_then(|r| r.loaded_ul_stats.median_ms);
+    let idle_base = idle_ms.unwrap_or(0.0);
+
+    ui.columns(4, |cols| {
+        cols[0].vertical(|ui| {
+            palette.subtle_card_frame().show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.set_min_height(52.0);
+                ui.label(
+                    egui::RichText::new("Bufferbloat Grade")
+                        .size(11.0)
+                        .color(palette.text_muted),
+                );
+                if let Some(ref res) = state.result {
+                    let (fg, _bg) = bloat_colors(palette, res.bufferbloat_grade);
+                    let worst = res
+                        .loaded_dl_stats
+                        .median_ms
+                        .unwrap_or(idle_base)
+                        .max(res.loaded_ul_stats.median_ms.unwrap_or(idle_base));
+                    let bloat = (worst - idle_base).max(0.0);
+                    ui.label(
+                        egui::RichText::new(res.bufferbloat_grade.label())
+                            .size(18.0)
+                            .strong()
+                            .color(fg),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("Worst +{bloat:.0} ms under load"))
+                                .size(11.0)
+                                .color(palette.text_muted),
+                        )
+                        .truncate(),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new("—")
+                            .size(18.0)
+                            .strong()
+                            .monospace()
+                            .color(palette.text_muted),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("Run test to grade")
+                                .size(11.0)
+                                .color(palette.text_muted),
+                        )
+                        .truncate(),
+                    );
+                }
+            });
+        });
+
+        kpi_card(
+            &mut cols[1],
+            palette,
+            "Unloaded Idle",
+            &idle_ms
+                .map(|m| format!("{m:.1} ms"))
+                .unwrap_or_else(|| "—".into()),
+            &state
+                .result
+                .as_ref()
+                .and_then(|r| r.unloaded_stats.jitter_ms)
+                .map(|j| format!("Jitter {j:.1} ms"))
+                .unwrap_or_else(|| "Baseline RTT".into()),
+            Some(palette.ok),
+        );
+
+        let dl_delta = dl_loaded.map(|m| (m - idle_base).max(0.0));
+        kpi_card(
+            &mut cols[2],
+            palette,
+            "Download Loaded",
+            &dl_loaded
+                .map(|m| format!("{m:.1} ms"))
+                .unwrap_or_else(|| "—".into()),
+            &dl_delta
+                .map(|d| format!("+{d:.1} ms vs idle"))
+                .unwrap_or_else(|| "Active download RTT".into()),
+            Some(palette.accent),
+        );
+
+        let ul_delta = ul_loaded.map(|m| (m - idle_base).max(0.0));
+        kpi_card(
+            &mut cols[3],
+            palette,
+            "Upload Loaded",
+            &ul_loaded
+                .map(|m| format!("{m:.1} ms"))
+                .unwrap_or_else(|| "—".into()),
+            &ul_delta
+                .map(|d| format!("+{d:.1} ms vs idle"))
+                .unwrap_or_else(|| "Active upload RTT".into()),
+            Some(palette.warn),
+        );
+    });
+
+    ui.add_space(10.0);
+
     palette.card_frame().show(ui, |ui| {
         ui.set_min_width(ui.available_width());
         section_label(
@@ -523,12 +732,12 @@ fn render_bufferbloat_details(
         ui.add_space(8.0);
 
         let total_w = ui.available_width();
-        let gap = 20.0;
-        let left_w = ((total_w - gap) * 0.49).max(260.0);
-        let right_w = (total_w - gap - left_w).max(250.0);
+        let gap = 16.0;
+        let left_w = ((total_w - gap) * 0.46).max(180.0);
+        let right_w = (total_w - gap - left_w).max(180.0);
 
         ui.horizontal_top(|ui| {
-            // Left: Grade badge, 3 latency bars, workload impact pills, SQM advice
+            // Left: Grade ring, 3 latency bars, workload pills, SQM advice
             ui.allocate_ui_with_layout(
                 vec2(left_w, 10.0),
                 Layout::top_down(Align::LEFT),
@@ -545,11 +754,11 @@ fn render_bufferbloat_details(
 
                         ui.horizontal(|ui| {
                             let (rect, _) =
-                                ui.allocate_exact_size(vec2(42.0, 42.0), Sense::hover());
-                            ui.painter().circle_filled(rect.center(), 20.0, bg);
+                                ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
+                            ui.painter().circle_filled(rect.center(), 21.0, bg);
                             ui.painter().circle_stroke(
                                 rect.center(),
-                                20.0,
+                                21.0,
                                 Stroke::new(1.5, fg),
                             );
                             ui.painter().text(
@@ -560,7 +769,7 @@ fn render_bufferbloat_details(
                                 fg,
                             );
                             ui.add_space(8.0);
-                            let text_w = (left_w - 56.0).max(160.0);
+                            let text_w = (left_w - 56.0).max(120.0);
                             ui.allocate_ui_with_layout(
                                 vec2(text_w, 10.0),
                                 Layout::top_down(Align::LEFT),
@@ -597,7 +806,7 @@ fn render_bufferbloat_details(
                             bar_scale,
                             palette.ok,
                         );
-                        ui.add_space(5.0);
+                        ui.add_space(6.0);
                         latency_bar_row(
                             ui,
                             palette,
@@ -607,7 +816,7 @@ fn render_bufferbloat_details(
                             bar_scale,
                             palette.accent,
                         );
-                        ui.add_space(5.0);
+                        ui.add_space(6.0);
                         latency_bar_row(
                             ui,
                             palette,
@@ -619,6 +828,8 @@ fn render_bufferbloat_details(
                         );
 
                         ui.add_space(10.0);
+                        section_label(ui, palette, "REAL-TIME WORKLOAD IMPACT");
+                        ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
                             workload_pill(ui, palette, "Video Calls", summary.video_calls);
                             workload_pill(ui, palette, "Gaming", summary.gaming);
@@ -630,9 +841,9 @@ fn render_bufferbloat_details(
                             egui::RichText::new(if state.running {
                                 "Measuring unloaded baseline and active-load RTT inflation..."
                             } else {
-                                "Run Speed Test to inspect Download/Upload queue latency inflation and real-time app impact."
+                                "Start a test to measure queue latency inflation under full Download & Upload saturation."
                             })
-                            .size(12.0)
+                            .size(12.5)
                             .color(palette.text_muted),
                         );
                     }
@@ -641,32 +852,68 @@ fn render_bufferbloat_details(
 
             ui.add_space(gap);
 
-            // Right: Loaded RTT Timeline Plot
+            // Right: Loaded RTT Timeline Plot (always auto-bounds with 28% headroom so Legend never overlaps)
             ui.allocate_ui_with_layout(
                 vec2(right_w, 10.0),
                 Layout::top_down(Align::LEFT),
                 |ui| {
                     ui.set_width(right_w);
-                    let bloat_y_axis = AxisHints::new_y().min_thickness(44.0).formatter(|mark, _range| {
-                        let v = if mark.value.abs() < 0.5 { 0.0 } else { mark.value };
-                        format!("{v:.0} ms")
-                    });
-                    let mut bplot = Plot::new("speedtest_bloat_plot")
-                        .height(185.0)
+                    let bloat_y_axis =
+                        AxisHints::new_y()
+                            .min_thickness(46.0)
+                            .formatter(|mark, _range| {
+                                let v = if mark.value.abs() < 0.5 {
+                                    0.0
+                                } else {
+                                    mark.value
+                                };
+                                format!("{v:.0} ms")
+                            });
+
+                    let max_rtt = state
+                        .dl_rtt_samples
+                        .iter()
+                        .chain(state.ul_rtt_samples.iter())
+                        .map(|p| p[1])
+                        .fold(idle_ms.unwrap_or(0.0), f64::max);
+                    let headroom_rtt = if max_rtt > 0.0 {
+                        (max_rtt * 1.30).max(25.0)
+                    } else {
+                        60.0
+                    };
+                    let max_x = state
+                        .dl_rtt_samples
+                        .iter()
+                        .chain(state.ul_rtt_samples.iter())
+                        .map(|p| p[0])
+                        .fold(0.0_f64, f64::max)
+                        .max(8.0);
+
+                    Plot::new("speedtest_bloat_plot")
+                        .height(225.0)
                         .show_background(false)
-                        .legend(Legend::default())
+                        .allow_drag(false)
+                        .allow_zoom(false)
+                        .allow_scroll(false)
+                        .auto_bounds([true, true])
+                        .include_x(0.0)
+                        .include_x(max_x)
+                        .include_y(0.0)
+                        .include_y(headroom_rtt)
+                        .legend(Legend::default().position(Corner::LeftTop))
                         .custom_y_axes(vec![bloat_y_axis])
                         .y_grid_spacer(uniform_grid_spacer(nice_y_grid_spacer))
+                        .x_grid_spacer(uniform_grid_spacer(|_| [2.0, 1.0, 0.5]))
                         .x_axis_formatter(|mark, _range| {
-                            let v = if mark.value.abs() < 0.05 { 0.0 } else { mark.value };
-                            format!("{v:.1}s")
-                        });
-                    if state.dl_rtt_samples.is_empty() && state.ul_rtt_samples.is_empty() {
-                        bplot = bplot
-                            .default_x_bounds(0.0, 8.0)
-                            .default_y_bounds(0.0, 50.0);
-                    }
-                    bplot.show(ui, |plot_ui| {
+                            let v = if mark.value.abs() < 0.05 {
+                                0.0
+                            } else {
+                                mark.value
+                            };
+                            format!("{v:.0}s")
+                        })
+                        .show(ui, |plot_ui| {
+                            plot_ui.set_auto_bounds([true, true]);
                             if let Some(idle) = idle_ms {
                                 plot_ui.hline(
                                     HLine::new("Idle Baseline", idle)
@@ -682,7 +929,7 @@ fn render_bufferbloat_details(
                                         PlotPoints::from(state.dl_rtt_samples.clone()),
                                     )
                                     .color(palette.accent)
-                                    .width(2.0),
+                                    .width(2.1),
                                 );
                             }
                             if !state.ul_rtt_samples.is_empty() {
@@ -692,7 +939,7 @@ fn render_bufferbloat_details(
                                         PlotPoints::from(state.ul_rtt_samples.clone()),
                                     )
                                     .color(palette.warn)
-                                    .width(2.0),
+                                    .width(2.1),
                                 );
                             }
                         });
@@ -700,6 +947,121 @@ fn render_bufferbloat_details(
             );
         });
     });
+}
+
+fn render_history_tab(ui: &mut Ui, palette: &AppPalette, history: &PersistedState) {
+    palette.card_frame().show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        section_label(ui, palette, "SPEED TEST & BUFFERBLOAT HISTORY");
+        ui.add_space(6.0);
+        if history.speedtest_history.is_empty() {
+            ui.label(
+                egui::RichText::new("No past speed tests recorded yet.")
+                    .size(12.5)
+                    .color(palette.text_muted),
+            );
+        } else {
+            TableBuilder::new(ui)
+                .id_salt("speedtest_history_table")
+                .striped(true)
+                .max_scroll_height(320.0)
+                .column(Column::exact(132.0))
+                .column(Column::exact(105.0))
+                .column(Column::exact(105.0))
+                .column(Column::exact(86.0))
+                .column(Column::exact(135.0))
+                .column(Column::remainder())
+                .header(22.0, |mut h| {
+                    h.col(|ui| {
+                        ui.strong("When");
+                    });
+                    h.col(|ui| {
+                        ui.strong("Download");
+                    });
+                    h.col(|ui| {
+                        ui.strong("Upload");
+                    });
+                    h.col(|ui| {
+                        ui.strong("Idle RTT");
+                    });
+                    h.col(|ui| {
+                        ui.strong("DL / UL Loaded");
+                    });
+                    h.col(|ui| {
+                        ui.strong("Grade");
+                    });
+                })
+                .body(|body| {
+                    body.rows(24.0, history.speedtest_history.len(), |mut row| {
+                        let r = &history.speedtest_history[row.index()];
+                        row.col(|ui| {
+                            ui.monospace(
+                                r.timestamp
+                                    .with_timezone(&chrono::Local)
+                                    .format("%Y-%m-%d %H:%M")
+                                    .to_string(),
+                            );
+                        });
+                        row.col(|ui| {
+                            ui.monospace(format!("{:.1} Mbps", r.download_mbps));
+                        });
+                        row.col(|ui| {
+                            ui.monospace(format!("{:.1} Mbps", r.upload_mbps));
+                        });
+                        row.col(|ui| {
+                            ui.monospace(format!("{:.1} ms", r.idle_median_ms));
+                        });
+                        row.col(|ui| {
+                            let dl = r
+                                .loaded_dl_median_ms
+                                .map(|m| format!("{m:.0}"))
+                                .unwrap_or_else(|| "—".into());
+                            let ul = r
+                                .loaded_ul_median_ms
+                                .map(|m| format!("{m:.0}"))
+                                .unwrap_or_else(|| "—".into());
+                            ui.monospace(format!("{dl} / {ul} ms"));
+                        });
+                        row.col(|ui| {
+                            let (fg, bg) = bloat_colors(palette, r.bufferbloat_grade);
+                            status_pill(ui, r.bufferbloat_grade.label(), fg, bg);
+                        });
+                    });
+                });
+        }
+    });
+}
+
+fn render_phase_stepper_rtl(
+    ui: &mut Ui,
+    palette: &AppPalette,
+    phase: Option<SpeedTestPhase>,
+    running: bool,
+) {
+    // Reversed because parent layout is right_to_left.
+    let steps = [
+        (3usize, "4. Grade"),
+        (2usize, "3. Upload"),
+        (1usize, "2. Download"),
+        (0usize, "1. Idle"),
+    ];
+
+    let active_idx = match phase {
+        None => None,
+        Some(SpeedTestPhase::IdleLatency) => Some(0),
+        Some(SpeedTestPhase::Download) => Some(1),
+        Some(SpeedTestPhase::Upload) => Some(2),
+        Some(SpeedTestPhase::Completed) => Some(3),
+    };
+
+    for (idx, lbl) in steps {
+        let (fg, bg) = match active_idx {
+            Some(cur) if idx < cur || (!running && cur == 3) => (palette.ok, palette.ok_bg),
+            Some(cur) if idx == cur && running => (palette.accent, palette.card_subtle_bg),
+            _ => (palette.text_muted, palette.card_subtle_bg),
+        };
+        status_pill(ui, lbl, fg, bg);
+    }
 }
 
 fn latency_bar_row(
@@ -752,28 +1114,36 @@ fn kpi_card(
     title: &str,
     value: &str,
     subtitle: &str,
-    col: Option<Color32>,
+    color: Option<Color32>,
 ) {
     palette.subtle_card_frame().show(ui, |ui| {
         ui.set_min_width(ui.available_width());
-        ui.set_min_height(56.0);
+        ui.set_min_height(52.0);
         ui.label(
             egui::RichText::new(title)
                 .size(11.0)
                 .color(palette.text_muted),
         );
-        ui.label(
-            egui::RichText::new(value)
-                .size(18.0)
-                .strong()
-                .monospace()
-                .color(col.unwrap_or(palette.text_primary)),
-        );
-        ui.label(
-            egui::RichText::new(subtitle)
-                .size(11.0)
-                .color(palette.text_muted),
-        );
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(value)
+                    .size(17.5)
+                    .strong()
+                    .monospace()
+                    .color(color.unwrap_or(palette.text_primary)),
+            )
+            .truncate(),
+        )
+        .on_hover_text(value);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(subtitle)
+                    .size(11.0)
+                    .color(palette.text_muted),
+            )
+            .truncate(),
+        )
+        .on_hover_text(subtitle);
     });
 }
 

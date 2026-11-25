@@ -484,11 +484,19 @@ pub fn render(
                     let v = if mark.value.abs() < 0.5 { 0.0 } else { mark.value };
                     format!("{v:.0}")
                 });
+                let max_y = pts.iter().map(|p| p[1]).fold(0.0_f64, f64::max);
+                let y_top = if max_y > 0.0 {
+                    (max_y * 1.18).max(10.0)
+                } else {
+                    100.0
+                };
                 let mut plot = Plot::new("iperf3_plot")
                     .height(175.0)
                     .show_background(false)
+                    .auto_bounds([true, true])
                     .legend(Legend::default())
                     .include_y(0.0)
+                    .include_y(y_top)
                     .custom_y_axes(vec![y_axis])
                     .y_grid_spacer(uniform_grid_spacer(nice_y_grid_spacer))
                     .x_axis_formatter(|mark, _range| {
@@ -496,11 +504,10 @@ pub fn render(
                         format!("{v:.0}s")
                     });
                 if pts.is_empty() {
-                    plot = plot
-                        .default_x_bounds(0.0, 10.0)
-                        .default_y_bounds(0.0, 100.0);
+                    plot = plot.include_x(0.0).include_x(10.0);
                 }
                 plot.show(ui, |plot_ui| {
+                        plot_ui.set_auto_bounds([true, true]);
                         if !pts.is_empty() {
                             plot_ui.line(
                                 Line::new("Throughput", PlotPoints::from(pts))

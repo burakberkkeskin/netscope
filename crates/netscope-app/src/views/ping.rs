@@ -280,19 +280,27 @@ pub fn render(
             let v = if mark.value.abs() < 0.05 { 0.0 } else { mark.value };
             format!("{v:.1} ms")
         });
+        let max_rtt = ok_pts.iter().map(|p| p[1]).fold(0.0_f64, f64::max);
+        let y_top = if max_rtt > 0.0 {
+            (max_rtt * 1.20).max(5.0)
+        } else {
+            50.0
+        };
         let mut plot = Plot::new("ping_rtt_plot")
             .height(200.0)
             .show_background(false)
+            .auto_bounds([true, true])
+            .include_y(0.0)
+            .include_y(y_top)
             .legend(Legend::default())
             .custom_y_axes(vec![y_axis])
             .y_grid_spacer(uniform_grid_spacer(nice_y_grid_spacer))
             .x_axis_formatter(|mark, _range| format!("#{}", mark.value.round() as i64));
         if ok_pts.is_empty() && lost_pts.is_empty() {
-            plot = plot
-                .default_x_bounds(1.0, 10.0)
-                .default_y_bounds(0.0, 50.0);
+            plot = plot.include_x(1.0).include_x(10.0);
         }
         plot.show(ui, |plot_ui| {
+                plot_ui.set_auto_bounds([true, true]);
                 if !ok_pts.is_empty() {
                     plot_ui.line(
                         Line::new("RTT (ms)", PlotPoints::from(ok_pts.clone()))

@@ -6,6 +6,39 @@
 
 A cross-platform (**macOS**, **Linux**, **Windows**), pure-Rust native network diagnostics desktop application and Menu Bar / System Tray monitor. Built with zero telemetry, zero external runtime dependencies, and unprivileged operation (no `root` required for Ping, Traceroute, MTR, `iperf3`, or LAN scanning).
 
+<p align="center">
+  <a href="docs/screenshots/hero-visual-traceroute.png">
+    <img src="docs/screenshots/hero-visual-traceroute.png" alt="NetScope Visual Traceroute" width="880" />
+  </a>
+</p>
+
+<details open>
+<summary><b>More Screenshots</b> <i>(click any preview to view full size)</i></summary>
+<br />
+<table>
+  <tr>
+    <td align="center">
+      <a href="docs/screenshots/internet-check.png"><img src="docs/screenshots/internet-check.png" width="380" alt="Internet Check" /></a><br />
+      <sub><b>Internet Check</b> — 5-stage diagnostic pipeline</sub>
+    </td>
+    <td align="center">
+      <a href="docs/screenshots/ipv6-check.png"><img src="docs/screenshots/ipv6-check.png" width="380" alt="IPv6 Check & SLAAC Inspector" /></a><br />
+      <sub><b>IPv6 Check</b> — Dual-Stack, PMTUD &amp; SLAAC RA Inspector</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="docs/screenshots/speed-bufferbloat.png"><img src="docs/screenshots/speed-bufferbloat.png" width="380" alt="Speed & Bufferbloat" /></a><br />
+      <sub><b>Speed &amp; Bufferbloat</b> — 4-stream throughput &amp; SQM grade</sub>
+    </td>
+    <td align="center">
+      <a href="docs/screenshots/dns-lookup.png"><img src="docs/screenshots/dns-lookup.png" width="380" alt="DNS Lookup" /></a><br />
+      <sub><b>DNS Lookup</b> — Parallel <code>ALL</code> query &amp; detected System DNS</sub>
+    </td>
+  </tr>
+</table>
+</details>
+
 ---
 
 ## Features & Tools (15 Built-In Modules)
@@ -13,7 +46,7 @@ A cross-platform (**macOS**, **Linux**, **Windows**), pure-Rust native network d
 ### Health Checks
 - **Menu Bar / System Tray Monitor:** Optional toggleable system tray icon (`Tray: On` / `Tray: Off` in the sidebar); when enabled, keeps running after closing the main window and displays public IP, ASN/ISP, VPN interface status (`utun`, `wg`, `tailscale`, etc.), and DNS egress consistency (`DNS Matches` / `Upstream DNS` / `DNS Leak!`). When disabled, closing the window quits cleanly.
 - **Internet Check:** 5-stage visual pipeline (`This Host -> Router -> Internet -> DNS -> Web`) pinpointing whether an outage is on your machine, local router, ISP link, DNS resolver, or HTTP stack—tolerating routers that drop ICMP echo when upstream connectivity works, with one-click jumps to **Path Troubleshoot** and **IPv6 Check**.
-- **IPv6 Check:** 6-stage IPv6 readiness suite (`Local Stack -> Router (NDP) -> ICMPv6 -> DNS v6 -> HTTPS v6 -> PMTUD`) inspecting GUA/SLAAC/ULA addressing, Router Advertisement flags (`M`/`O`/`A`/`L`) & lifetimes, scoped link-local gateway reachability, `AAAA` & IPv6 DoH transport, Dual-Stack parity (`IPv6` vs `IPv4`, Happy Eyeballs & PoP peering), NAT66 detection, and unprivileged 32 KB full-MSS PMTUD blackhole detection.
+- **IPv6 Check:** 6-stage IPv6 readiness suite (`Local Stack -> Router (NDP) -> ICMPv6 -> DNS v6 -> HTTPS v6 -> PMTUD`) inspecting GUA/SLAAC/ULA addressing, Router Advertisement flags (`M`/`O`/`A`/`L`) & lifetimes, a **Formatted / Raw SLAAC & RA Inspector** (showing RA `AdvLinkMTU`, hop limit, timers, and all advertised GUA/ULA prefixes), scoped link-local gateway reachability, `AAAA` & IPv6 DoH transport, Dual-Stack parity (`IPv6` vs `IPv4`, Happy Eyeballs & PoP peering), NAT66 detection, and unprivileged 32 KB full-MSS PMTUD blackhole detection.
 - **Path Troubleshoot:** Hop-by-hop latency waterfall classifying segments (`LAN`, `CGNAT`, `ISP`, `Transit`, `Target`) and filtering mid-hop ICMP control-plane rate-limiting.
 
 ### Path & Probes
@@ -24,7 +57,7 @@ All probing tools below support an `[Auto | IPv4 | IPv6]` stack selector to forc
 - **MTR:** Continuous hop statistics with a 40-round **Loss/Latency Heatmap** and automatic **Outage Log**.
 
 ### Bandwidth
-- **Speed Test:** 4-stream parallel HTTP/1.1 download/upload throughput test with a 4-step phase stepper, peak Mbps / jitter telemetry, area-filled throughput charts, persistent run history, and a detailed **Bufferbloat Analyzer (`A+..F`)** featuring idle/DL/UL latency breakdown, Loaded RTT timeline, per-workload readiness pills (Video Calls, Gaming, VoIP, Web), and SQM recommendations.
+- **Speed & Bufferbloat:** 4-stream parallel HTTP/1.1 download and continuous `tokio-rustls` streaming upload with `[Auto | IPv4 | IPv6]` stack selection, automatic closest Cloudflare Edge PoP detection (`CF-RAY`), 1s sliding-window smoothing, and dedicated **Speed Test**, **Bufferbloat (`A+..F`)**, and **History** sub-tabs featuring idle/DL/UL latency breakdown, Loaded RTT timeline, per-workload readiness pills (Video Calls, Gaming, VoIP, Web), and SQM recommendations.
 - **iperf3 Client:** Built-in **zero-dependency pure-Rust ESnet `iperf3` v3.17 wire-protocol client**—no OS `iperf3` binary required on the client machine. Supports `[Auto | IPv4 | IPv6]`, `-c`, `-p`, `-t`, `-P` (1–32 streams), `-R` (reverse download), `--bidir`, `-u` (UDP with `-b` bitrate pacing & RFC 1889 jitter/loss), `-O` (omit slow-start), `-l` (buffer size), `-N` (`TCP_NODELAY`), saved server profiles, and run history.
 
 ### Network Tools
@@ -33,7 +66,7 @@ All probing tools below support an `[Auto | IPv4 | IPv6]` stack selector to forc
 - **Subnet Calculator:** Instant IPv4 & IPv6 CIDR calculator displaying netmask, wildcard mask, usable range, RFC scope, binary bitmask breakdown, and an interactive **Subnet Splitter**.
 
 ### DNS & Domains
-- **DNS Lookup:** `dig`-style resolver queries (`A`, `AAAA`, `MX`, `TXT`, `NS`, `CNAME`, `SOA`, `CAA`, `SRV`, `PTR`) with 1-click resolver pills (`System`, `1.1.1.1`, `8.8.8.8`, `9.9.9.9`, custom), KPI summary strip, Structured Table / Raw `dig` view toggle, click-to-copy values, and direct `Check Propagation ->` jump.
+- **DNS Lookup:** `dig`-style resolver queries (`ALL` parallel multi-record fan-out plus `A`, `AAAA`, `MX`, `TXT`, `NS`, `CNAME`, `SOA`, `CAA`, `SRV`, `PTR`) with 1-click resolver pills showing the live detected OS **System DNS** IP (`System (IP)`, `1.1.1.1`, `8.8.8.8`, `9.9.9.9`, custom), fast 3s timeout, KPI summary strip, type-filter chips, Structured Table / Raw `dig` view toggle, click-to-copy values, and direct `Check Propagation ->` jump.
 - **DNS Propagation:** Concurrent multi-region propagation check across `System Default` and 13 global RFC 8484 DoH resolvers with normalized RRset consensus and optional expected-value cutover matching.
 - **SSL Certificate Inspector:** Full X.509 certificate chain viewer, SAN/key-usage inspection, OS trust-store diagnosis (`rustls-platform-verifier`), SNI override, and optional Custom CA PEM verification.
 
@@ -147,10 +180,11 @@ Roadmap plans and Architectural Decision Records (ADRs) live in [`plans/README.m
 - **Phase 4 (`v0.4.0`):** Global DNS Propagation Checker — **Completed**
 - **Phase 5 (`v0.5.0`):** IPv6 Diagnostics & Readiness Suite — **Completed**
 - **Phase 6 (`v0.6.0`):** Self-GeoIP Accuracy, Toggleable Menu Bar Tray, Speed Test / Bufferbloat / DNS / Chart UI/UX Overhaul & Deterministic UI E2E Tests — **Completed**
-- **Phase 7 (`v0.7.0`):** Whois / RDAP & GeoIP Lookup — **Planned**
-- **Phase 8 (`v0.8.0`):** Email Security Check (`SPF`, `DKIM`, `DMARC`, `MX`) — **Planned**
-- **Phase 9 (`v0.9.0`):** Wi-Fi Analyzer & Channel Recommendation — **Planned**
-- **Phase 10 (`v0.10.0`):** Live Interface Monitor — **Planned**
+- **Phase 7 (`v0.7.0`):** Speed Test Streaming Fix & Bufferbloat Sub-Tabs, DNS `ALL` / System IP / 3s Timeout UX, IPv6 SLAAC Formatted/Raw Inspector & README Showcase — **Completed**
+- **Phase 8 (`v0.8.0`):** Whois / RDAP & GeoIP Lookup — **Planned**
+- **Phase 9 (`v0.9.0`):** Email Security Check (`SPF`, `DKIM`, `DMARC`, `MX`) — **Planned**
+- **Phase 10 (`v0.10.0`):** Wi-Fi Analyzer & Channel Recommendation — **Planned**
+- **Phase 11 (`v0.11.0`):** Live Interface Monitor — **Planned**
 
 ---
 

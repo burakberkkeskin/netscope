@@ -58,7 +58,7 @@ impl ToolTab {
             Self::Traceroute => "Traceroute",
             Self::VisualTraceroute => "Visual Traceroute",
             Self::Mtr => "MTR",
-            Self::SpeedTest => "Speed Test",
+            Self::SpeedTest => "Speed & Bufferbloat",
             Self::Iperf3 => "iperf3",
             Self::LanScanner => "LAN Scanner",
             Self::PortScan => "Port Scan",
@@ -106,6 +106,11 @@ pub struct NetScopeApp {
     headless_test: bool,
 }
 
+pub struct ScreenshotConfig {
+    pub dir: PathBuf,
+    pub demo: bool,
+}
+
 enum ShotPhase {
     StartStep,
     WaitData,
@@ -115,16 +120,18 @@ enum ShotPhase {
 
 struct ScreenshotDriver {
     dir: PathBuf,
+    demo: bool,
     step: usize,
     phase: ShotPhase,
     started_at: Instant,
 }
 
 impl ScreenshotDriver {
-    fn new(dir: PathBuf) -> Self {
-        let _ = std::fs::create_dir_all(&dir);
+    fn new(cfg: ScreenshotConfig) -> Self {
+        let _ = std::fs::create_dir_all(&cfg.dir);
         Self {
-            dir,
+            dir: cfg.dir,
+            demo: cfg.demo,
             step: 0,
             phase: ShotPhase::StartStep,
             started_at: Instant::now(),
@@ -133,15 +140,20 @@ impl ScreenshotDriver {
 }
 
 impl NetScopeApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, screenshot_dir: Option<PathBuf>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, screenshot_cfg: Option<ScreenshotConfig>) -> Self {
         let rt = Runtime::new().expect("Tokio runtime initialization failed");
-        let history = PersistedState::load();
-        let tray = if screenshot_dir.is_some() || !history.menu_bar_enabled {
+        let is_demo = screenshot_cfg.as_ref().is_some_and(|c| c.demo);
+        let history = if is_demo {
+            PersistedState::default()
+        } else {
+            PersistedState::load()
+        };
+        let tray = if screenshot_cfg.is_some() || !history.menu_bar_enabled {
             None
         } else {
             TrayController::try_new()
         };
-        let screenshot_driver = screenshot_dir.map(ScreenshotDriver::new);
+        let screenshot_driver = screenshot_cfg.map(ScreenshotDriver::new);
 
         let (public_tx, public_rx) = mpsc::unbounded_channel();
         cc.egui_ctx.style_mut_of(egui::Theme::Dark, |s| {
@@ -181,7 +193,11 @@ impl NetScopeApp {
             headless_test: false,
         };
 
-        app.trigger_status_refresh(&cc.egui_ctx);
+        if is_demo {
+            app.seed_demo_showcase_fixtures();
+        } else {
+            app.trigger_status_refresh(&cc.egui_ctx);
+        }
         app
     }
 
@@ -305,7 +321,8 @@ impl eframe::App for NetScopeApp {
             }
         }
 
-        if self.last_status_refresh.elapsed() >= Duration::from_secs(60) {
+        let is_demo = self.screenshot_driver.as_ref().is_some_and(|d| d.demo);
+        if !is_demo && self.last_status_refresh.elapsed() >= Duration::from_secs(60) {
             self.trigger_status_refresh(ctx);
         }
 
@@ -850,10 +867,746 @@ impl NetScopeApp {
         }
     }
 
+    fn seed_demo_showcase_fixtures(&mut self) {
+        use crate::views::speedtest::SpeedTestSubTab;
+        use crate::views::visual_traceroute::VisualHop;
+        use chrono::Utc;
+        use netscope_core::dns::{DnsLookupResult, DnsLookupStatus, DnsRecordRow, DnsRecordType};
+        use netscope_core::geoip::GeoLocation;
+        use netscope_core::history::SpeedTestRecord;
+        use netscope_core::icmp::TracerouteHop;
+        use netscope_core::internet_check::{
+            DiagnosisVerdict, DnsStageResult, InternetCheckReport, ProbeStageResult, StageHealth,
+            VerdictSeverity, WebStageResult,
+        };
+        use netscope_core::ipv6_check::{
+            CheckStatus, DualStackComparison, EndpointProbe, Ipv6AddressEntry, Ipv6AddressScope,
+            Ipv6CheckReport, Ipv6ChecklistItem, Ipv6Stage, Ipv6StageKind, Ipv6Verdict,
+            LocalIpv6Inventory, MtuReport, RaInterfaceParams, RaPrefixInfo, RaRouterInfo,
+        };
+        use netscope_core::net_info::{LinkType, LocalNetworkInfo};
+        use netscope_core::speedtest::{BufferbloatGrade, SpeedTestResult, SpeedTestServerInfo};
+        use netscope_core::stats::compute_latency_stats;
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+        let pub_v4 = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 42));
+        let sys_dns_v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 53));
+        let sys_dns_v6_addr = "fd00:db8:1::53".parse::<Ipv6Addr>().unwrap();
+        let sys_dns_v6 = IpAddr::V6(sys_dns_v6_addr);
+
+        self.public_status = Some(PublicNetworkStatus {
+            public_ip: Some(pub_v4),
+            isp_or_org: Some("AS64512 Example Fiber".into()),
+            country: Some("DE".into()),
+            city: Some("Frankfurt".into()),
+            colo: Some("FRA".into()),
+            dns_resolver_ip: Some(pub_v4),
+            dns_leak_status: DnsLeakStatus::NoLeak,
+            vpn_active: false,
+            vpn_interfaces: Vec::new(),
+            checked_at: Utc::now(),
+        });
+
+        // 1. Visual Traceroute (Hero Showcase — Frankfurt -> Amsterdam -> London -> Cloudflare LHR)
+        self.visual_traceroute.host = "1.1.1.1".into();
+        self.visual_traceroute.resolved_ip = Some(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)));
+        self.visual_traceroute.origin_geo = Some(GeoLocation {
+            ip: pub_v4,
+            is_private: false,
+            is_anycast: false,
+            anycast_pop: None,
+            registry_place: None,
+            label: "Public IP".into(),
+            city: Some("Frankfurt".into()),
+            country: Some("Germany".into()),
+            country_code: Some("DE".into()),
+            isp: Some("AS64512 Example Fiber".into()),
+            asn: Some(64512),
+            lat: Some(50.1109),
+            lon: Some(8.6821),
+        });
+        self.visual_traceroute.hops = vec![
+            VisualHop {
+                trace: TracerouteHop {
+                    hop: 1,
+                    ip: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
+                    hostname: Some("gateway.lan".into()),
+                    probe_rtts_ms: vec![Some(1.1), Some(1.3), Some(1.2)],
+                    avg_ms: Some(1.2),
+                    reached_target: false,
+                },
+                geo: Some(GeoLocation {
+                    ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+                    is_private: true,
+                    is_anycast: false,
+                    anycast_pop: None,
+                    registry_place: None,
+                    label: "Private LAN".into(),
+                    city: None,
+                    country: None,
+                    country_code: None,
+                    isp: Some("Local Network".into()),
+                    asn: None,
+                    lat: None,
+                    lon: None,
+                }),
+            },
+            VisualHop {
+                trace: TracerouteHop {
+                    hop: 2,
+                    ip: Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1))),
+                    hostname: Some("core-fra1.example-isp.net".into()),
+                    probe_rtts_ms: vec![Some(6.4), Some(6.8), Some(6.5)],
+                    avg_ms: Some(6.6),
+                    reached_target: false,
+                },
+                geo: Some(GeoLocation {
+                    ip: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
+                    is_private: false,
+                    is_anycast: false,
+                    anycast_pop: None,
+                    registry_place: None,
+                    label: "Frankfurt, DE".into(),
+                    city: Some("Frankfurt".into()),
+                    country: Some("Germany".into()),
+                    country_code: Some("DE".into()),
+                    isp: Some("Example Fiber Core".into()),
+                    asn: Some(64512),
+                    lat: Some(50.1109),
+                    lon: Some(8.6821),
+                }),
+            },
+            VisualHop {
+                trace: TracerouteHop {
+                    hop: 3,
+                    ip: Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 44))),
+                    hostname: Some("ae12.ams-ix.transit.example".into()),
+                    probe_rtts_ms: vec![Some(14.1), Some(14.6), Some(14.3)],
+                    avg_ms: Some(14.3),
+                    reached_target: false,
+                },
+                geo: Some(GeoLocation {
+                    ip: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 44)),
+                    is_private: false,
+                    is_anycast: false,
+                    anycast_pop: None,
+                    registry_place: None,
+                    label: "Amsterdam, NL".into(),
+                    city: Some("Amsterdam".into()),
+                    country: Some("Netherlands".into()),
+                    country_code: Some("NL".into()),
+                    isp: Some("EuroTransit IX".into()),
+                    asn: Some(64513),
+                    lat: Some(52.3676),
+                    lon: Some(4.9041),
+                }),
+            },
+            VisualHop {
+                trace: TracerouteHop {
+                    hop: 4,
+                    ip: Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 88))),
+                    hostname: Some("linx-lon1.transit.example".into()),
+                    probe_rtts_ms: vec![Some(22.3), Some(22.9), Some(22.5)],
+                    avg_ms: Some(22.6),
+                    reached_target: false,
+                },
+                geo: Some(GeoLocation {
+                    ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 88)),
+                    is_private: false,
+                    is_anycast: false,
+                    anycast_pop: None,
+                    registry_place: None,
+                    label: "London, GB".into(),
+                    city: Some("London".into()),
+                    country: Some("United Kingdom".into()),
+                    country_code: Some("GB".into()),
+                    isp: Some("Atlantic Backbone".into()),
+                    asn: Some(64514),
+                    lat: Some(51.5072),
+                    lon: Some(-0.1276),
+                }),
+            },
+            VisualHop {
+                trace: TracerouteHop {
+                    hop: 5,
+                    ip: Some(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))),
+                    hostname: Some("one.one.one.one".into()),
+                    probe_rtts_ms: vec![Some(24.2), Some(24.7), Some(24.4)],
+                    avg_ms: Some(24.4),
+                    reached_target: true,
+                },
+                geo: Some(GeoLocation {
+                    ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+                    is_private: false,
+                    is_anycast: true,
+                    anycast_pop: Some("LHR".into()),
+                    registry_place: None,
+                    label: "London, GB (Anycast LHR)".into(),
+                    city: Some("London".into()),
+                    country: Some("United Kingdom".into()),
+                    country_code: Some("GB".into()),
+                    isp: Some("Cloudflare, Inc.".into()),
+                    asn: Some(13335),
+                    lat: Some(51.4700),
+                    lon: Some(-0.4543),
+                }),
+            },
+        ];
+        self.visual_traceroute.fit_route();
+
+        // 2. Internet Check
+        let local = LocalNetworkInfo {
+            interface_name: "en0".into(),
+            friendly_name: Some("Wi-Fi".into()),
+            link_type: LinkType::WiFi,
+            local_ipv4: Some(Ipv4Addr::new(192, 168, 1, 24)),
+            local_ipv6: Some("2001:db8:42:10::a1b2".parse().unwrap()),
+            gateway_ip: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
+            mac_address: Some("02:00:5e:10:20:30".into()),
+            dns_servers: vec![sys_dns_v4, sys_dns_v6],
+            vpn_active: false,
+            vpn_interfaces: Vec::new(),
+        };
+        let router_samples = vec![Some(1.1), Some(1.2), Some(1.4), Some(1.1), Some(1.3)];
+        let inet_samples = vec![Some(11.8), Some(12.2), Some(12.0), Some(12.5), Some(11.9)];
+        self.internet_check.current = Some(InternetCheckReport {
+            checked_at: Utc::now(),
+            local,
+            public: self.public_status.clone(),
+            local_health: StageHealth::Ok,
+            router: Some(ProbeStageResult {
+                target_label: "192.168.1.1".into(),
+                health: StageHealth::Ok,
+                stats: compute_latency_stats(&router_samples),
+                samples_ms: router_samples,
+            }),
+            internet: Some(ProbeStageResult {
+                target_label: "1.1.1.1".into(),
+                health: StageHealth::Ok,
+                stats: compute_latency_stats(&inet_samples),
+                samples_ms: inet_samples,
+            }),
+            dns: Some(DnsStageResult {
+                resolver_label: "192.168.1.53".into(),
+                health: StageHealth::Ok,
+                resolved_count: 3,
+                total_count: 3,
+                median_ms: Some(9.4),
+                sample_ms: vec![Some(8.9), Some(9.4), Some(10.1)],
+            }),
+            web: Some(WebStageResult {
+                url: "https://1.1.1.1/cdn-cgi/trace".into(),
+                health: StageHealth::Ok,
+                ttfb_ms: Some(26.4),
+                status_code: Some(200),
+                detail: "HTTP 200 · TLS 1.3".into(),
+            }),
+            verdict: DiagnosisVerdict {
+                severity: VerdictSeverity::Ok,
+                headline: "All systems healthy — Internet is online".into(),
+                explanation: "Local link, gateway (1.2 ms), internet ICMP (12.0 ms), DNS (9.4 ms), and HTTPS/TLS (26.4 ms) all passed with 0% loss.".into(),
+                failing_stage: None,
+            },
+        });
+
+        // 3. IPv6 Check (with Formatted + Raw SLAAC RA Inspector & 1492 B RA AdvLinkMTU)
+        let v6_inv = LocalIpv6Inventory {
+            interface_name: "en0".into(),
+            interface_index: 14,
+            link_type: LinkType::WiFi,
+            link_mtu: Some(1500),
+            nd6_options: Some("201<PERFORMNUD,DAD>".into()),
+            addresses: vec![
+                Ipv6AddressEntry {
+                    addr: "2001:db8:42:10::a1b2".parse().unwrap(),
+                    prefix_len: 64,
+                    scope: Ipv6AddressScope::GlobalUnicast,
+                    is_slaac: true,
+                    is_temporary: false,
+                    is_secured: true,
+                    is_deprecated: false,
+                    is_tentative: false,
+                    is_duplicated: false,
+                    is_permanent: false,
+                },
+                Ipv6AddressEntry {
+                    addr: "2001:db8:42:10:7c4f:91e2:88a1:3d04".parse().unwrap(),
+                    prefix_len: 64,
+                    scope: Ipv6AddressScope::GlobalUnicast,
+                    is_slaac: true,
+                    is_temporary: true,
+                    is_secured: false,
+                    is_deprecated: false,
+                    is_tentative: false,
+                    is_duplicated: false,
+                    is_permanent: false,
+                },
+                Ipv6AddressEntry {
+                    addr: "fd00:db8:42:10::a1b2".parse().unwrap(),
+                    prefix_len: 64,
+                    scope: Ipv6AddressScope::UniqueLocal,
+                    is_slaac: true,
+                    is_temporary: false,
+                    is_secured: true,
+                    is_deprecated: false,
+                    is_tentative: false,
+                    is_duplicated: false,
+                    is_permanent: false,
+                },
+                Ipv6AddressEntry {
+                    addr: "fe80::200:5eff:fe00:5302".parse().unwrap(),
+                    prefix_len: 64,
+                    scope: Ipv6AddressScope::LinkLocal,
+                    is_slaac: false,
+                    is_temporary: false,
+                    is_secured: true,
+                    is_deprecated: false,
+                    is_tentative: false,
+                    is_duplicated: false,
+                    is_permanent: false,
+                },
+            ],
+            ra_router: RaRouterInfo {
+                gateway: Some("fe80::200:5eff:fe00:5301".parse().unwrap()),
+                gateway_display: Some("fe80::200:5eff:fe00:5301%en0".into()),
+                managed_m: false,
+                other_o: true,
+                preference: Some("medium".into()),
+                expire: Some("28m14s".into()),
+                provisioning_summary: "SLAAC (A=1) + Stateless DHCPv6 (O=1, M=0)".into(),
+            },
+            ra_prefixes: vec![
+                RaPrefixInfo {
+                    prefix: "2001:db8:42:10::/64".into(),
+                    autonomous: true,
+                    on_link: true,
+                    valid_lft: Some("86400".into()),
+                    preferred_lft: Some("14400".into()),
+                    expire: Some("23h58m12s".into()),
+                    router: Some("fe80::200:5eff:fe00:5301%en0".into()),
+                    router_reachable: true,
+                },
+                RaPrefixInfo {
+                    prefix: "fd00:db8:42:10::/64".into(),
+                    autonomous: true,
+                    on_link: true,
+                    valid_lft: Some("86400".into()),
+                    preferred_lft: Some("14400".into()),
+                    expire: Some("23h58m12s".into()),
+                    router: Some("fe80::200:5eff:fe00:5301%en0".into()),
+                    router_reachable: true,
+                },
+            ],
+            ra_interface: RaInterfaceParams {
+                ra_link_mtu: Some(1492),
+                cur_hop_limit: Some(64),
+                base_reachable: Some("30s0ms".into()),
+                reachable: Some("15s".into()),
+                retrans: Some("1s0ms".into()),
+                nd6_flags: Some("0x201 PERFORMNUD DAD".into()),
+            },
+            raw_slaac_dump: "\
+=== ndp -rn (Default Routers / RA Flags) ===
+fe80::200:5eff:fe00:5301%en0 if=en0, flags=OT, pref=medium, expire=28m14s
+
+=== ndp -pn (Advertised Prefixes / SLAAC Lifetimes) ===
+2001:db8:42:10::/64 if=en0
+flags=ALO vltime=86400, pltime=14400, expire=23h58m12s, ref=3
+  advertised by
+    fe80::200:5eff:fe00:5301%en0 (reachable)
+fd00:db8:42:10::/64 if=en0
+flags=ALO vltime=86400, pltime=14400, expire=23h58m12s, ref=1
+  advertised by
+    fe80::200:5eff:fe00:5301%en0 (reachable)
+
+=== ndp -i en0 (RA Link MTU & Timers) ===
+linkmtu=1492, curhlim=64, basereachable=30s0ms, reachable=15s, retrans=1s0ms
+Flags: 0x201 PERFORMNUD DAD"
+                .into(),
+            ipv6_dns_servers: vec![sys_dns_v6_addr],
+            has_link_local: true,
+            has_gua: true,
+            has_ula: true,
+            has_privacy_temp: true,
+            has_dad_issue: false,
+        };
+        let v6_stages = vec![
+            Ipv6Stage {
+                kind: Ipv6StageKind::LocalStack,
+                title: "Local Stack".into(),
+                short_badge: "GUA /64".into(),
+                health: StageHealth::Ok,
+                detail: "en0 · SLAAC (A=1) + Stateless DHCPv6 (O=1, M=0)".into(),
+                latency_ms: None,
+            },
+            Ipv6Stage {
+                kind: Ipv6StageKind::Router,
+                title: "Router (NDP)".into(),
+                short_badge: "1.4 ms".into(),
+                health: StageHealth::Ok,
+                detail: "fe80::200:5eff:fe00:5301%en0 responded".into(),
+                latency_ms: Some(1.4),
+            },
+            Ipv6Stage {
+                kind: Ipv6StageKind::IcmpV6,
+                title: "ICMPv6".into(),
+                short_badge: "13.8 ms".into(),
+                health: StageHealth::Ok,
+                detail: "2606:4700:4700::1111 (0% loss)".into(),
+                latency_ms: Some(13.8),
+            },
+            Ipv6Stage {
+                kind: Ipv6StageKind::DnsV6,
+                title: "DNS v6".into(),
+                short_badge: "AAAA + v6".into(),
+                health: StageHealth::Ok,
+                detail: "AAAA resolution & IPv6 DoH transport passed".into(),
+                latency_ms: Some(9.2),
+            },
+            Ipv6Stage {
+                kind: Ipv6StageKind::HttpsV6,
+                title: "HTTPS v6".into(),
+                short_badge: "FRA · 18ms".into(),
+                health: StageHealth::Ok,
+                detail: "Symmetric PoP (FRA) · IPv6 vs IPv4 delta -1 ms".into(),
+                latency_ms: Some(18.0),
+            },
+            Ipv6Stage {
+                kind: Ipv6StageKind::Pmtud,
+                title: "PMTUD".into(),
+                short_badge: "1492 B (RA)".into(),
+                health: StageHealth::Ok,
+                detail: "Path MTU 1492 B (RA AdvLinkMTU 1492 B, NIC 1500 B) · 32 KB TLS frame passed (22 ms)".into(),
+                latency_ms: Some(22.0),
+            },
+        ];
+        self.ipv6_check.current = Some(Ipv6CheckReport {
+            checked_at: Utc::now(),
+            inventory: v6_inv,
+            stages: v6_stages,
+            dual_stack: DualStackComparison {
+                ipv6: EndpointProbe {
+                    ip: Some(IpAddr::V6("2001:db8:42:10:7c4f:91e2:88a1:3d04".parse().unwrap())),
+                    colo: Some("FRA".into()),
+                    http_version: Some("HTTP/2.0".into()),
+                    latency_ms: Some(18.0),
+                    ok: true,
+                    error: None,
+                },
+                ipv4: EndpointProbe {
+                    ip: Some(pub_v4),
+                    colo: Some("FRA".into()),
+                    http_version: Some("HTTP/2.0".into()),
+                    latency_ms: Some(19.0),
+                    ok: true,
+                    error: None,
+                },
+                delta_ms: Some(-1.0),
+                happy_eyeballs_winner: "IPv6 Preferred (RFC 8305)".into(),
+                peering_note: "Symmetric PoP (FRA) · IPv6 vs IPv4 delta -1 ms".into(),
+            },
+            mtu: MtuReport {
+                link_mtu: Some(1500),
+                ra_link_mtu: Some(1492),
+                path_mtu: Some(1492),
+                large_frame_ok: true,
+                large_frame_bytes: 32_768,
+                large_frame_ms: Some(22.0),
+                blackhole_suspected: false,
+                status_summary: "Path MTU 1492 B (RA AdvLinkMTU 1492 B, NIC 1500 B) · 32 KB TLS frame passed (22 ms)".into(),
+            },
+            checklist: vec![
+                Ipv6ChecklistItem {
+                    name: "Link-Local Address (fe80::/10)".into(),
+                    status: CheckStatus::Pass,
+                    evidence: "fe80::200:5eff:fe00:5302".into(),
+                },
+                Ipv6ChecklistItem {
+                    name: "Global Unicast Address (GUA 2000::/3)".into(),
+                    status: CheckStatus::Pass,
+                    evidence: "2001:db8:42:10::a1b2/64, 2001:db8:42:10:7c4f:91e2:88a1:3d04/64".into(),
+                },
+                Ipv6ChecklistItem {
+                    name: "Privacy Extensions (RFC 4941/8981)".into(),
+                    status: CheckStatus::Pass,
+                    evidence: "1 temporary privacy GUA(s) active".into(),
+                },
+                Ipv6ChecklistItem {
+                    name: "Router Advertisement & Default Route".into(),
+                    status: CheckStatus::Pass,
+                    evidence: "fe80::200:5eff:fe00:5301%en0 · SLAAC (A=1) + Stateless DHCPv6 (O=1, M=0)".into(),
+                },
+                Ipv6ChecklistItem {
+                    name: "Path MTU & PMTUD (RFC 8200)".into(),
+                    status: CheckStatus::Pass,
+                    evidence: "Path MTU 1492 B (RA AdvLinkMTU 1492 B, NIC 1500 B) · 32 KB TLS OK".into(),
+                },
+            ],
+            verdict: Ipv6Verdict {
+                severity: VerdictSeverity::Ok,
+                score: 10,
+                max_score: 10,
+                headline: "Native Dual-Stack IPv6 Ready".into(),
+                explanation: "GUA, temporary privacy extensions, SLAAC RA (AdvLinkMTU 1492 B), ICMPv6, DNS v6, HTTPS v6, and full-MSS PMTUD all passed cleanly.".into(),
+            },
+            nat66_detected: Some(false),
+            dns_aaaa_ok: true,
+            dns_v6_transport_ok: true,
+        });
+
+        // 4. Speed & Bufferbloat (smooth 742 / 46 Mbps + Grade A+)
+        self.speedtest.sub_tab = SpeedTestSubTab::SpeedTest;
+        self.speedtest.server_info = Some(SpeedTestServerInfo {
+            ip: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 220)),
+            colo: Some("FRA".into()),
+            is_ipv6: false,
+        });
+        self.speedtest.dl_samples = vec![
+            [0.5, 420.0],
+            [1.0, 645.0],
+            [1.5, 728.0],
+            [2.0, 752.0],
+            [2.5, 761.0],
+            [3.0, 744.0],
+            [3.5, 758.0],
+            [4.0, 771.0],
+            [4.5, 748.0],
+            [5.0, 739.0],
+            [5.5, 764.0],
+            [6.0, 755.0],
+            [6.5, 742.0],
+            [7.0, 751.0],
+            [7.5, 746.0],
+            [8.0, 749.0],
+        ];
+        self.speedtest.ul_samples = vec![
+            [0.5, 38.2],
+            [1.0, 44.1],
+            [1.5, 45.8],
+            [2.0, 46.3],
+            [2.5, 45.9],
+            [3.0, 46.7],
+            [3.5, 46.1],
+            [4.0, 45.4],
+            [4.5, 46.8],
+            [5.0, 46.2],
+            [5.5, 45.7],
+            [6.0, 46.4],
+            [6.5, 46.0],
+            [7.0, 45.9],
+            [7.5, 46.5],
+            [8.0, 46.1],
+        ];
+        self.speedtest.dl_rtt_samples = vec![
+            [0.5, 13.4],
+            [1.5, 15.8],
+            [2.5, 16.2],
+            [3.5, 15.1],
+            [4.5, 16.9],
+            [5.5, 15.4],
+            [6.5, 15.9],
+            [7.5, 15.2],
+        ];
+        self.speedtest.ul_rtt_samples = vec![
+            [0.5, 14.2],
+            [1.5, 16.5],
+            [2.5, 17.8],
+            [3.5, 16.9],
+            [4.5, 17.1],
+            [5.5, 16.4],
+            [6.5, 17.2],
+            [7.5, 16.8],
+        ];
+        self.speedtest.dl_peak_mbps = Some(771.0);
+        self.speedtest.ul_peak_mbps = Some(46.8);
+        self.speedtest.phase = Some(netscope_core::speedtest::SpeedTestPhase::Completed);
+        self.speedtest.result = Some(SpeedTestResult {
+            timestamp: Utc::now(),
+            download_mbps: 748.4,
+            upload_mbps: 46.1,
+            unloaded_stats: compute_latency_stats(&[Some(12.2), Some(12.5), Some(12.9), Some(12.4)]),
+            loaded_dl_stats: compute_latency_stats(&[Some(15.4), Some(15.9), Some(16.2)]),
+            loaded_ul_stats: compute_latency_stats(&[Some(16.5), Some(17.1), Some(16.8)]),
+            bufferbloat_grade: BufferbloatGrade::APlus,
+            server_colo: Some("FRA".into()),
+            server_ip: Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 220))),
+            is_ipv6: false,
+        });
+        self.history.record_speedtest(SpeedTestRecord {
+            timestamp: Utc::now(),
+            download_mbps: 748.4,
+            upload_mbps: 46.1,
+            idle_median_ms: 12.5,
+            loaded_dl_median_ms: Some(15.9),
+            loaded_ul_median_ms: Some(16.8),
+            bufferbloat_grade: BufferbloatGrade::APlus,
+        });
+
+        // 5. DNS Lookup (`ALL` parallel query via System 192.168.1.53)
+        self.dns.query = "cloudflare.com".into();
+        self.dns.record_type = DnsRecordType::All;
+        self.dns.system_dns_servers = vec![sys_dns_v4, sys_dns_v6];
+        self.dns.result = Some(DnsLookupResult {
+            query: "cloudflare.com".into(),
+            record_type: DnsRecordType::All,
+            server_label: "System (192.168.1.53 +1)".into(),
+            query_time_ms: 18.6,
+            records: vec![
+                DnsRecordRow {
+                    name: "cloudflare.com.".into(),
+                    ttl: 300,
+                    record_type: "A".into(),
+                    value: "104.16.132.229".into(),
+                },
+                DnsRecordRow {
+                    name: "cloudflare.com.".into(),
+                    ttl: 300,
+                    record_type: "A".into(),
+                    value: "104.16.133.229".into(),
+                },
+                DnsRecordRow {
+                    name: "cloudflare.com.".into(),
+                    ttl: 300,
+                    record_type: "AAAA".into(),
+                    value: "2606:4700::6810:84e5".into(),
+                },
+                DnsRecordRow {
+                    name: "cloudflare.com.".into(),
+                    ttl: 300,
+                    record_type: "AAAA".into(),
+                    value: "2606:4700::6810:85e5".into(),
+                },
+                DnsRecordRow {
+                    name: "cloudflare.com.".into(),
+                    ttl: 3600,
+                    record_type: "MX".into(),
+                    value: "10 mailstream-east.mxrecord.io.".into(),
+                },
+                DnsRecordRow {
+                    name: "cloudflare.com.".into(),
+                    ttl: 3600,
+                    record_type: "TXT".into(),
+                    value: "v=spf1 ip4:199.15.212.0/22 include:_spf.mx.cloudflare.net ~all".into(),
+                },
+                DnsRecordRow {
+                    name: "cloudflare.com.".into(),
+                    ttl: 86400,
+                    record_type: "NS".into(),
+                    value: "ns3.cloudflare.com.".into(),
+                },
+                DnsRecordRow {
+                    name: "cloudflare.com.".into(),
+                    ttl: 86400,
+                    record_type: "NS".into(),
+                    value: "ns4.cloudflare.com.".into(),
+                },
+                DnsRecordRow {
+                    name: "cloudflare.com.".into(),
+                    ttl: 1800,
+                    record_type: "SOA".into(),
+                    value: "ns3.cloudflare.com. dns.cloudflare.com. 2358412091 10000 2400 604800 300".into(),
+                },
+                DnsRecordRow {
+                    name: "cloudflare.com.".into(),
+                    ttl: 300,
+                    record_type: "CAA".into(),
+                    value: "0 issue \"digicert.com\"".into(),
+                },
+            ],
+            raw_dig_text: "; <<>> NetScope DNS <<>> cloudflare.com. ALL\n;; SERVER: System (192.168.1.53, +1) [192.168.1.53, fd00:db8:1::53]\n;; STATUS: NOERROR\n;; QUERY TIME: 18.6 ms\n\n;; ANSWER SECTION:\ncloudflare.com.              300    IN A      104.16.132.229\ncloudflare.com.              300    IN AAAA   2606:4700::6810:84e5".into(),
+            status: DnsLookupStatus::Found,
+            resolved_servers: vec![sys_dns_v4, sys_dns_v6],
+        });
+    }
+
     fn drive_screenshots(&mut self, ctx: &egui::Context) {
         let Some(mut driver) = self.screenshot_driver.take() else {
             return;
         };
+
+        if driver.demo {
+            use crate::views::speedtest::SpeedTestSubTab;
+            const DEMO_STEPS: [(ToolTab, &str, bool, Option<SpeedTestSubTab>); 5] = [
+                (
+                    ToolTab::VisualTraceroute,
+                    "hero-visual-traceroute.png",
+                    false,
+                    None,
+                ),
+                (ToolTab::InternetCheck, "internet-check.png", false, None),
+                (ToolTab::Ipv6Diagnostics, "ipv6-check.png", false, None),
+                (
+                    ToolTab::SpeedTest,
+                    "speed-bufferbloat.png",
+                    false,
+                    Some(SpeedTestSubTab::SpeedTest),
+                ),
+                (ToolTab::DnsLookup, "dns-lookup.png", false, None),
+            ];
+
+            if driver.step >= DEMO_STEPS.len() {
+                info!(
+                    "Demo showcase screenshots finished ({} screens saved to {})",
+                    DEMO_STEPS.len(),
+                    driver.dir.display()
+                );
+                self.should_quit = true;
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+                return;
+            }
+
+            let (tab, filename, dark, sub) = DEMO_STEPS[driver.step];
+            match driver.phase {
+                ShotPhase::StartStep => {
+                    self.active_tool = tab;
+                    self.dark_mode = dark;
+                    if let Some(st) = sub {
+                        self.speedtest.sub_tab = st;
+                    }
+                    if tab == ToolTab::VisualTraceroute {
+                        self.visual_traceroute.fit_route();
+                    }
+                    driver.phase = ShotPhase::SettleFrames(4);
+                }
+                ShotPhase::WaitData => {
+                    driver.phase = ShotPhase::SettleFrames(3);
+                }
+                ShotPhase::SettleFrames(rem) => {
+                    if rem > 0 {
+                        driver.phase = ShotPhase::SettleFrames(rem - 1);
+                        ctx.request_repaint();
+                    } else {
+                        let done = Arc::new(AtomicBool::new(false));
+                        let done_cb = done.clone();
+                        let out_path = driver.dir.join(filename);
+                        let ctx_cb = ctx.clone();
+                        ctx.send_viewport_cmd(ViewportCommand::Screenshot(
+                            egui::ScreenshotCallback::new(move |img| {
+                                if let Err(e) = save_color_image_png(&out_path, &img) {
+                                    error!("Failed writing screenshot {}: {e}", out_path.display());
+                                } else {
+                                    info!("Saved demo screenshot: {}", out_path.display());
+                                }
+                                done_cb.store(true, Ordering::SeqCst);
+                                ctx_cb.request_repaint();
+                            }),
+                        ));
+                        driver.started_at = Instant::now();
+                        driver.phase = ShotPhase::WaitCapture(done);
+                    }
+                }
+                ShotPhase::WaitCapture(ref done) => {
+                    if done.load(Ordering::SeqCst)
+                        || driver.started_at.elapsed() >= Duration::from_secs(4)
+                    {
+                        driver.step += 1;
+                        driver.phase = ShotPhase::StartStep;
+                    }
+                }
+            }
+            self.screenshot_driver = Some(driver);
+            return;
+        }
 
         const STEPS: [(ToolTab, &str, bool); 17] = [
             (ToolTab::InternetCheck, "01-internet-check-light.png", false),
@@ -1233,34 +1986,82 @@ mod ui_e2e_tests {
 
     #[test]
     fn e2e_dns_lookup_table_raw_dig_and_propagation_jump() {
+        use crate::views::dns::DnsLookupError;
+        use netscope_core::dns::DnsLookupStatus;
+
         let ctx = egui::Context::default();
         let mut app = NetScopeApp::new_headless_for_test();
         app.active_tool = ToolTab::DnsLookup;
         app.dns.query = "example.com".into();
-        app.dns.record_type = DnsRecordType::A;
+        app.dns.record_type = DnsRecordType::All;
+        app.dns.system_dns_servers = vec!["192.168.1.53".parse().unwrap()];
         app.dns.result = Some(DnsLookupResult {
             query: "example.com".into(),
-            record_type: DnsRecordType::A,
-            server_label: "System Default".into(),
+            record_type: DnsRecordType::All,
+            server_label: "System (192.168.1.53)".into(),
             query_time_ms: 12.4,
-            records: vec![DnsRecordRow {
-                name: "example.com.".into(),
-                ttl: 300,
-                record_type: "A".into(),
-                value: "192.0.2.10".into(),
-            }],
-            raw_dig_text: "; <<>> NetScope DNS <<>> example.com. A\n;; ANSWER SECTION:\nexample.com. 300 IN A 192.0.2.10".into(),
+            records: vec![
+                DnsRecordRow {
+                    name: "example.com.".into(),
+                    ttl: 300,
+                    record_type: "A".into(),
+                    value: "192.0.2.10".into(),
+                },
+                DnsRecordRow {
+                    name: "example.com.".into(),
+                    ttl: 3600,
+                    record_type: "NS".into(),
+                    value: "ns1.example.com.".into(),
+                },
+            ],
+            raw_dig_text: "; <<>> NetScope DNS <<>> example.com. ALL\n;; ANSWER SECTION:\nexample.com. 300 IN A 192.0.2.10".into(),
+            status: DnsLookupStatus::Found,
+            resolved_servers: vec!["192.168.1.53".parse().unwrap()],
         });
 
         let out = run_frame(&ctx, &mut app, Vec::new());
+        assert!(has_rendered_text(&out, "System (192.168.1.53)"));
         assert!(has_rendered_text(&out, "300s (5m)"));
         assert!(has_rendered_text(&out, "192.0.2.10"));
+        assert!(has_rendered_text(&out, "NS (1)"));
 
         let raw_btn = find_text_center(&out, "Raw dig").expect("Raw dig toggle must be visible");
         let out = click_at(&ctx, &mut app, raw_btn);
         assert_eq!(app.dns.view_mode, DnsViewMode::RawDig);
         assert!(has_rendered_text(&out, "ANSWER SECTION"));
 
+        // Verify error state completely replaces stale table results
+        app.dns.result = None;
+        app.dns.error = Some(DnsLookupError {
+            query: "example.com".into(),
+            record_type: DnsRecordType::A,
+            server_label: "Cloudflare (1.1.1.1)".into(),
+            message: "Timed out after 3s querying Cloudflare (1.1.1.1)".into(),
+        });
+        let out = run_frame(&ctx, &mut app, Vec::new());
+        assert!(has_rendered_text(&out, "LOOKUP FAILED"));
+        assert!(!has_rendered_text(&out, "192.0.2.10"));
+
+        // Verify NODATA state renders cleanly without stale results
+        app.dns.error = None;
+        app.dns.view_mode = DnsViewMode::Structured;
+        app.dns.result = Some(DnsLookupResult {
+            query: "example.com".into(),
+            record_type: DnsRecordType::CNAME,
+            server_label: "System (192.168.1.53)".into(),
+            query_time_ms: 8.1,
+            records: Vec::new(),
+            raw_dig_text: String::new(),
+            status: DnsLookupStatus::NoRecords,
+            resolved_servers: vec!["192.168.1.53".parse().unwrap()],
+        });
+        let out = run_frame(&ctx, &mut app, Vec::new());
+        assert!(has_rendered_text(&out, "NO RECORDS"));
+        assert!(!has_rendered_text(&out, "192.0.2.10"));
+
+        // Jump from ALL defaults to A in Propagation
+        app.dns.record_type = DnsRecordType::All;
+        let out = run_frame(&ctx, &mut app, Vec::new());
         let jump_btn = find_text_center(&out, "Check Propagation ->")
             .expect("Check Propagation -> button must be visible");
         let _ = click_at(&ctx, &mut app, jump_btn);
@@ -1272,6 +2073,8 @@ mod ui_e2e_tests {
 
     #[test]
     fn e2e_speedtest_and_bufferbloat_panel_renders_all_grades() {
+        use crate::views::speedtest::SpeedTestSubTab;
+
         let ctx = egui::Context::default();
         let mut app = NetScopeApp::new_headless_for_test();
         app.active_tool = ToolTab::SpeedTest;
@@ -1304,12 +2107,71 @@ mod ui_e2e_tests {
                 loaded_dl_stats: compute_latency_stats(&[Some(dl_med)]),
                 loaded_ul_stats: compute_latency_stats(&[Some(ul_med)]),
                 bufferbloat_grade: grade,
+                server_colo: Some("FRA".into()),
+                server_ip: Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 220))),
+                is_ipv6: false,
             });
+
+            // 1. Speed Test sub-tab shows dedicated Download + Upload throughput charts and Edge PoP
+            app.speedtest.sub_tab = SpeedTestSubTab::SpeedTest;
+            let out = run_frame(&ctx, &mut app, Vec::new());
+            assert!(has_rendered_text(&out, "DOWNLOAD THROUGHPUT"));
+            assert!(has_rendered_text(&out, "UPLOAD THROUGHPUT"));
+            assert!(has_rendered_text(&out, "FRA · IPv4"));
+
+            // 2. Bufferbloat sub-tab shows dedicated analysis, grade, and workload pills
+            app.speedtest.sub_tab = SpeedTestSubTab::Bufferbloat;
             let out = run_frame(&ctx, &mut app, Vec::new());
             assert!(has_rendered_text(&out, "BUFFERBLOAT ANALYSIS"));
             assert!(has_rendered_text(&out, grade.label()));
             assert!(has_rendered_text(&out, "Video Calls:"));
         }
+
+        // 3. History sub-tab renders past records
+        app.speedtest.sub_tab = SpeedTestSubTab::History;
+        let out = run_frame(&ctx, &mut app, Vec::new());
+        assert!(has_rendered_text(&out, "SPEED TEST & BUFFERBLOAT HISTORY"));
+        assert!(has_rendered_text(&out, "94.5 Mbps"));
+    }
+
+    #[test]
+    fn e2e_speedtest_empty_then_gigabit_autoscales_at_min_window_size() {
+        let ctx = egui::Context::default();
+        let mut app = NetScopeApp::new_headless_for_test();
+        app.active_tool = ToolTab::SpeedTest;
+
+        // Frame 1: Empty state at minimum 920x620 viewport (used to lock Y-axis at 0..100!)
+        let min_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(920.0, 620.0));
+        let raw_min = egui::RawInput {
+            screen_rect: Some(min_rect),
+            ..Default::default()
+        };
+        let mut out1 = ctx.run_ui(raw_min.clone(), |ui| app.render_ui(ui));
+        out1.textures_delta.clear();
+
+        // Frame 2: Live 787 Mbps Download & 42 Mbps Upload arrive — plots must auto-scale above 787!
+        app.speedtest.running = true;
+        app.speedtest.phase = Some(netscope_core::speedtest::SpeedTestPhase::Upload);
+        app.speedtest.live_dl_mbps = Some(787.8);
+        app.speedtest.live_ul_mbps = Some(42.1);
+        app.speedtest.live_loaded_rtt = Some(31.2);
+        app.speedtest.dl_samples = vec![[1.0, 620.0], [2.0, 787.8], [4.0, 765.0]];
+        app.speedtest.ul_samples = vec![[1.0, 41.0], [2.0, 42.5], [4.0, 42.1]];
+        let mut out = ctx.run_ui(raw_min.clone(), |ui| app.render_ui(ui));
+        out.textures_delta.clear();
+        // Run one more settle frame so egui_plot applies updated auto_bounds to ticks
+        let mut out = ctx.run_ui(raw_min, |ui| app.render_ui(ui));
+        out.textures_delta.clear();
+        // Y-axis must have scaled past 100 Mbps (e.g. showing 500 or 600 or 750 or 800)
+        assert!(
+            has_rendered_text(&out, "500")
+                || has_rendered_text(&out, "600")
+                || has_rendered_text(&out, "750")
+                || has_rendered_text(&out, "800"),
+            "Download plot Y-axis failed to auto-scale above 100 Mbps after empty first frame"
+        );
+        assert!(has_rendered_text(&out, "787.8 Mbps"));
+        assert!(has_rendered_text(&out, "42.1 Mbps"));
     }
 
     #[test]
@@ -1359,7 +2221,25 @@ mod ui_e2e_tests {
                 expire: Some("25m".into()),
                 provisioning_summary: "SLAAC (A=1) + Stateless DHCPv6 (O=1, M=0)".into(),
             },
-            ra_prefixes: Vec::new(),
+            ra_prefixes: vec![netscope_core::ipv6_check::RaPrefixInfo {
+                prefix: "2001:db8:40::/64".into(),
+                autonomous: true,
+                on_link: true,
+                valid_lft: Some("86400".into()),
+                preferred_lft: Some("14400".into()),
+                expire: Some("23h55m".into()),
+                router: Some("fe80::1%en0".into()),
+                router_reachable: true,
+            }],
+            ra_interface: netscope_core::ipv6_check::RaInterfaceParams {
+                ra_link_mtu: Some(1484),
+                cur_hop_limit: Some(64),
+                base_reachable: Some("30s0ms".into()),
+                reachable: Some("15s".into()),
+                retrans: Some("1s0ms".into()),
+                nd6_flags: Some("0x201 PERFORMNUD DAD".into()),
+            },
+            raw_slaac_dump: "=== ndp -i en0 ===\nlinkmtu=1484, curhlim=64".into(),
             ipv6_dns_servers: vec!["fd00:db8:20::53".parse().unwrap()],
             has_link_local: true,
             has_gua: true,
@@ -1446,6 +2326,7 @@ mod ui_e2e_tests {
             },
             mtu: MtuReport {
                 link_mtu: Some(1500),
+                ra_link_mtu: Some(1484),
                 path_mtu: Some(1484),
                 large_frame_ok: true,
                 large_frame_bytes: 32768,
@@ -1473,6 +2354,13 @@ mod ui_e2e_tests {
         let out = run_frame(&ctx, &mut app, Vec::new());
         assert!(has_rendered_text(&out, "IPv6 Operational"));
         assert!(has_rendered_text(&out, "Path: 1484 B"));
+        assert!(has_rendered_text(&out, "RA AdvLinkMTU: 1484 B"));
+        assert!(has_rendered_text(&out, "SLAAC & ROUTER ADVERTISEMENT"));
+
+        // Toggle SLAAC Inspector to Raw mode
+        app.ipv6_check.slaac_view = crate::views::ipv6_check::SlaacViewMode::Raw;
+        let out = run_frame(&ctx, &mut app, Vec::new());
+        assert!(has_rendered_text(&out, "linkmtu=1484"));
 
         // Now flip to PMTUD Blackhole scenario
         if let Some(ref mut rep) = app.ipv6_check.current {
