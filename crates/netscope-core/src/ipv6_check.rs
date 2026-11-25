@@ -724,24 +724,19 @@ pub fn collect_local_ipv6_inventory() -> Result<LocalIpv6Inventory, NetError> {
     };
 
     #[cfg(not(target_os = "macos"))]
-    let (link_mtu, nd6_options, os_addr_flags, ra_prefixes, mut ra_interface, mut raw_slaac_dump): (
-        Option<u32>,
-        Option<String>,
-        HashMap<Ipv6Addr, OsIpv6AddrFlags>,
-        Vec<RaPrefixInfo>,
-        RaInterfaceParams,
-        String,
-    ) = (
-        iface.mtu,
-        None,
-        HashMap::new(),
-        Vec::new(),
-        RaInterfaceParams::default(),
-        String::new(),
-    );
+    let link_mtu = iface.mtu;
+    #[cfg(not(target_os = "macos"))]
+    let nd6_options: Option<String> = None;
+    #[cfg(not(target_os = "macos"))]
+    let os_addr_flags: HashMap<Ipv6Addr, OsIpv6AddrFlags> = HashMap::new();
+    #[cfg(not(target_os = "macos"))]
+    let ra_prefixes: Vec<RaPrefixInfo> = Vec::new();
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let (ra_interface, raw_slaac_dump) = (RaInterfaceParams::default(), String::new());
 
     #[cfg(target_os = "linux")]
-    {
+    let (ra_interface, raw_slaac_dump) = {
+        let mut ra_interface = RaInterfaceParams::default();
         let mut raw_sections = Vec::new();
         if let Ok(out) = std::process::Command::new("ip")
             .args(["-6", "route", "show", "dev", &iface.name])
@@ -798,7 +793,6 @@ pub fn collect_local_ipv6_inventory() -> Result<LocalIpv6Inventory, NetError> {
         {
             ra_interface.cur_hop_limit = Some(h);
         }
-        raw_slaac_dump = raw_sections.join("\n\n");
         if ipv6_dns_servers.is_empty()
             && let Ok(resolv) = std::fs::read_to_string("/etc/resolv.conf")
         {
@@ -812,7 +806,8 @@ pub fn collect_local_ipv6_inventory() -> Result<LocalIpv6Inventory, NetError> {
                 }
             }
         }
-    }
+        (ra_interface, raw_sections.join("\n\n"))
+    };
 
     let mut addresses = Vec::with_capacity(iface.ipv6.len());
     for (idx, net) in iface.ipv6.iter().enumerate() {
